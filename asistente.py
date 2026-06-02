@@ -242,17 +242,13 @@ class Microfono:
                 audio = self.recognizer.record(src)
             os.unlink(path)
 
-            for lang in ["es-ES", "es-419", "en-US"]:
-                try:
-                    resultado = self.recognizer.recognize_google(audio, language=lang).lower().strip()
-                    if resultado:
-                        return resultado
-                except sr.UnknownValueError:
-                    continue
-                except Exception as e:
-                    print(f"[STT ERROR {lang}] {e}")
-                    continue
-            return None
+            try:
+                return self.recognizer.recognize_google(audio, language="es-ES").lower().strip()
+            except sr.UnknownValueError:
+                return None
+            except Exception as e:
+                print(f"[STT ERROR] {e}")
+                return None
         except Exception as e:
             print(f"[STT ERROR] {e}")
             return None
@@ -715,10 +711,11 @@ def main():
                         cerebro.memoria["notas"].append(mem_valor)
                 guardar_memoria(cerebro.memoria)
 
-            # Hablar en hilo separado para que el mic escuche en paralelo
+            # Hablar y esperar que termine antes de volver a escuchar
             hilo_voz = threading.Thread(target=voz.hablar, args=(mensaje,), daemon=True)
             hilo_voz.start()
-            # No hacemos join — el loop continúa escuchando mientras Jade habla
+            hilo_voz.join()
+            time.sleep(0.4)  # pausa para que el eco del parlante se disipe
 
             turnos_activos += 1
             if turnos_activos >= 8:
