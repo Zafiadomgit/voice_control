@@ -151,10 +151,10 @@ class Microfono:
     def _init_whisper(self):
         try:
             from faster_whisper import WhisperModel
-            # base model: good balance of speed/accuracy; change to "small" for more accuracy
-            self.model = WhisperModel("base", device="cpu", compute_type="int8")
+            # tiny model: fastest on CPU, good enough for voice commands
+            self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
             self.usar_whisper = True
-            print("🎙️  Whisper local STT ready (base model)")
+            print("🎙️  Whisper local STT ready (tiny model)")
         except ImportError:
             import speech_recognition as sr
             self.recognizer = sr.Recognizer()
@@ -165,10 +165,11 @@ class Microfono:
             print("🎙️  Using Google STT (install faster-whisper for local STT)")
 
     def grabar(self):
-        chunk = int(self.sample_rate * 0.05)
-        chunks_sil = int(1.2 / 0.05)
-        chunks_max = int(15 / 0.05)
-        grabando, silencio, hablo = [], 0, False
+        chunk = int(self.sample_rate * 0.03)   # 30ms chunks
+        chunks_sil = int(0.7 / 0.03)           # 0.7s de silencio para cortar
+        chunks_max = int(8 / 0.03)             # máximo 8s de grabación
+        chunks_sin_voz = int(2.5 / 0.03)       # si no hay voz en 2.5s, salir
+        grabando, silencio, hablo, sin_voz = [], 0, False, 0
         with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='float32') as stream:
             for _ in range(chunks_max):
                 data, _ = stream.read(chunk)
@@ -177,9 +178,14 @@ class Microfono:
                 if vol > 0.007:
                     hablo = True
                     silencio = 0
+                    sin_voz = 0
                 elif hablo:
                     silencio += 1
                     if silencio >= chunks_sil:
+                        break
+                else:
+                    sin_voz += 1
+                    if sin_voz >= chunks_sin_voz:
                         break
         return (np.concatenate(grabando) * 32767).astype(np.int16)
 
