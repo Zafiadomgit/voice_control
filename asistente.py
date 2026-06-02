@@ -27,7 +27,7 @@ from playsound3 import playsound
 
 WAKE_WORD        = "jade"
 ELEVENLABS_VOICE = "cgSgspJ2msm6clMCkdW9"
-ELEVENLABS_MODEL = "eleven_turbo_v2"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
 OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
 
 # ─────────────────────────────────────────
