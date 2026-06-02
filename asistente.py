@@ -23,7 +23,7 @@ import anthropic
 from pathlib import Path
 from playsound3 import playsound
 
-WAKE_WORD        = "jade"
+WAKE_WORD        = "luna"
 ELEVENLABS_VOICE = "FGY2WhTYpPnrIDTdsKH5"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
@@ -464,7 +464,7 @@ class ControlPC:
 # BRAIN
 # ─────────────────────────────────────────
 
-SYSTEM_PROMPT_BASE = """Eres Jade, una asistente de voz personal que controla un PC con Windows.
+SYSTEM_PROMPT_BASE = """Eres Luna, una asistente de voz personal que controla un PC con Windows.
 Respondes siempre en español, con naturalidad y brevedad.
 
 {memoria}
@@ -571,13 +571,13 @@ def main():
     print(f"\n✅ Listo! Di 'JADE' para activarme | Ctrl+C para salir\n")
     print("-"*52)
 
-    saludo = f"Hola {nombre}! Aquí estoy." if memoria.get("nombre") else "Hola! Soy Jade, tu asistente personal. Llámame cuando me necesites."
+    saludo = f"Hola {nombre}! Aquí estoy." if memoria.get("nombre") else "Hola! Soy Luna, tu asistente personal. Llámame cuando me necesites."
     voz.hablar(saludo)
 
     modo_activo    = False
     turnos_activos = 0
     ultimo_texto   = 0
-    WAKE_WORDS     = ["jade", "jad", "yade", "holly", "harvey", "harvy", "jolly", "hola jade", "hey jade"]
+    WAKE_WORDS     = ["luna", "lune", "lona", "luna?"]
 
     hilo_voz = None
 
