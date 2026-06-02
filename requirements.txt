@@ -11,3 +11,5 @@ pycaw
 comtypes
 wmi
 pywin32
+pyautogui
+pillow

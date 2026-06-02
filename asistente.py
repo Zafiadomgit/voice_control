@@ -15,7 +15,7 @@ JADE - VOICE ASSISTANT
   ELEVENLABS_API_KEY=...
 """
 
-import os, sys, json, subprocess, tempfile, time, threading
+import os, sys, json, subprocess, tempfile, time, threading, base64
 import numpy as np
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
@@ -70,6 +70,8 @@ def memoria_a_texto(mem):
         partes.append("Preferencias del usuario: " + "; ".join(mem["preferencias"]) + ".")
     if mem.get("notas"):
         partes.append("Notas guardadas: " + "; ".join(mem["notas"]) + ".")
+    if mem.get("resumen_conversacion"):
+        partes.append("Resumen de conversaciones anteriores: " + mem["resumen_conversacion"])
     return "\n".join(partes) if partes else ""
 
 # ─────────────────────────────────────────
@@ -523,6 +525,82 @@ class ControlPC:
             return False
 
 # ─────────────────────────────────────────
+# MOUSE / KEYBOARD CONTROL  (Feature 3)
+# ─────────────────────────────────────────
+
+class ControlMouse:
+    def click(self, x, y):
+        try:
+            import pyautogui
+            pyautogui.click(x, y)
+            return True
+        except Exception as e:
+            print(f"[ERROR CLICK] {e}")
+            return False
+
+    def escribir(self, texto):
+        try:
+            import pyautogui
+            pyautogui.typewrite(texto, interval=0.05)
+            return True
+        except Exception as e:
+            print(f"[ERROR ESCRIBIR] {e}")
+            return False
+
+    def hotkey(self, *keys):
+        try:
+            import pyautogui
+            pyautogui.hotkey(*keys)
+            return True
+        except Exception as e:
+            print(f"[ERROR HOTKEY] {e}")
+            return False
+
+    def mover(self, x, y):
+        try:
+            import pyautogui
+            pyautogui.moveTo(x, y, duration=0.3)
+            return True
+        except Exception as e:
+            print(f"[ERROR MOVER] {e}")
+            return False
+
+    def screenshot_y_analizar(self, pregunta, cerebro):
+        try:
+            import pyautogui
+            from PIL import Image
+            import io
+            screenshot = pyautogui.screenshot()
+            buf = io.BytesIO()
+            screenshot.save(buf, format="PNG")
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            r = cerebro.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": img_b64,
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": f"Responde en español, máximo 3 oraciones. {pregunta}"
+                        }
+                    ]
+                }]
+            )
+            return r.content[0].text.strip()
+        except Exception as e:
+            print(f"[ERROR SCREENSHOT] {e}")
+            return "No pude analizar la pantalla."
+
+# ─────────────────────────────────────────
 # BRAIN
 # ─────────────────────────────────────────
 
@@ -539,9 +617,12 @@ Puedes hacer:
 5. Abrir Claude Code con un prompt de voz
 6. Recordar información del usuario (nombre, preferencias, notas)
 7. Conversación natural
+8. Ejecutar planes multi-paso para tareas complejas
+9. Controlar el ratón y teclado del PC
+10. Tomar capturas de pantalla y describir lo que hay en pantalla
 
 RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
-{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"guardar_programa"|"responder",
+{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"guardar_programa"|"mouse_click"|"escribir_texto"|"hotkey"|"screenshot"|"plan"|"responder",
  "programa":"nombre o null",
  "query":"búsqueda o null",
  "url":"url o null",
@@ -552,7 +633,23 @@ RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
  "memoria_valor":"valor a guardar o null",
  "prog_nombre":"nombre del programa a guardar o null",
  "prog_ruta":"ruta del ejecutable o null",
+ "mouse_x":número o null,
+ "mouse_y":número o null,
+ "texto_escribir":"texto a escribir o null",
+ "teclas":"combinación de teclas ej. ctrl+c o null",
+ "pasos":["lista","de","pasos"] o null,
  "mensaje":"respuesta en español, máximo 2 oraciones"}
+
+PLANES — cuando una tarea requiere múltiples acciones encadenadas, usa accion "plan":
+Ejemplo: "busca vuelos a Brasil y dime el más barato"
+-> {"accion":"plan","pasos":["buscar_web:vuelos baratos a Brasil","leer_pagina","responder"],"mensaje":"Voy a buscar y analizar los vuelos, dame un momento."}
+Los pasos pueden ser: "buscar_web:<query>", "leer_pagina", "navegar_url:<url>", "responder"
+
+CONTROL DE RATÓN Y TECLADO:
+"haz clic en x=500 y=300" -> {"accion":"mouse_click","mouse_x":500,"mouse_y":300,"mensaje":"Haciendo clic."}
+"escribe hola mundo" -> {"accion":"escribir_texto","texto_escribir":"hola mundo","mensaje":"Escribiendo el texto."}
+"presiona ctrl+c" -> {"accion":"hotkey","teclas":"ctrl+c","mensaje":"Copiando al portapapeles."}
+"qué hay en pantalla" -> {"accion":"screenshot","mensaje":"Analizando la pantalla."}
 
 GUARDAR MEMORIA — cuando el usuario diga su nombre, una preferencia o algo que quiera que recuerdes:
 "me llamo David" -> {"accion":"guardar_memoria","memoria_key":"nombre","memoria_valor":"David","mensaje":"Perfecto, ya sé que te llamas David!"}
@@ -575,7 +672,7 @@ class Cerebro:
             r = self.client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=200,
-                system="Eres Jade, asistente de voz. Responde en español, máximo 3 oraciones, solo con la información relevante a la pregunta del usuario. Sin markdown.",
+                system="Eres Luna, asistente de voz. Responde en español, máximo 3 oraciones, solo con la información relevante a la pregunta del usuario. Sin markdown.",
                 messages=[{"role": "user", "content": f"Pregunta: {pregunta}\n\nContenido de la página:\n{contenido[:2000]}"}]
             )
             return r.content[0].text.strip()
@@ -583,9 +680,36 @@ class Cerebro:
             print(f"[ERROR RESUMEN] {e}")
             return "No pude procesar el contenido de la página."
 
+    def _comprimir_historial(self):
+        """Summarize the oldest 10 messages into a single summary and save to memoria."""
+        mensajes_a_resumir = self.historial[:10]
+        self.historial = self.historial[10:]
+        try:
+            texto_conv = "\n".join(
+                f"{m['role'].upper()}: {m['content']}" for m in mensajes_a_resumir
+            )
+            r = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=200,
+                system="Resume la siguiente conversación en español en 2-3 oraciones, capturando los temas principales y decisiones tomadas. Sin markdown.",
+                messages=[{"role": "user", "content": texto_conv}]
+            )
+            resumen = r.content[0].text.strip()
+            resumen_anterior = self.memoria.get("resumen_conversacion", "")
+            if resumen_anterior:
+                self.memoria["resumen_conversacion"] = resumen_anterior + " " + resumen
+            else:
+                self.memoria["resumen_conversacion"] = resumen
+            guardar_memoria(self.memoria)
+            print(f"[MEMORIA] Historial comprimido. Resumen guardado.")
+        except Exception as e:
+            print(f"[ERROR COMPRIMIR] {e}")
+
     def procesar(self, texto):
         self.historial.append({"role": "user", "content": texto})
-        if len(self.historial) > 20:
+        if len(self.historial) >= 16:
+            self._comprimir_historial()
+        elif len(self.historial) > 20:
             self.historial = self.historial[-20:]
         try:
             r = self.client.messages.create(
@@ -603,6 +727,55 @@ class Cerebro:
         except Exception as e:
             print(f"[ERROR API] {e}")
             return {"accion":"responder","mensaje":"Problemas de conexión, intenta de nuevo."}
+
+    def ejecutar_plan(self, pasos, contexto, navegador, cerebro_ref):
+        """Execute a list of plan steps sequentially, passing results between steps."""
+        resultado_anterior = contexto
+        ultimo_mensaje = ""
+        for paso in pasos:
+            print(f"[PLAN] Ejecutando paso: {paso}")
+            if paso.startswith("buscar_web:"):
+                query = paso[len("buscar_web:"):]
+                try:
+                    resultados = navegador.buscar(query)
+                    resultado_anterior = (
+                        f"Resultados de búsqueda para '{query}': " + ". ".join(resultados[:3])
+                        if resultados
+                        else f"No se encontraron resultados para '{query}'."
+                    )
+                    ultimo_mensaje = resultado_anterior
+                except Exception as e:
+                    resultado_anterior = f"Error buscando: {e}"
+            elif paso == "leer_pagina":
+                contenido = navegador.leer_pagina()
+                if contenido:
+                    resumen = self.resumir_pagina(contenido, resultado_anterior)
+                    resultado_anterior = resumen
+                    ultimo_mensaje = resumen
+                else:
+                    resultado_anterior = "No se pudo leer la página."
+            elif paso.startswith("navegar_url:"):
+                url = paso[len("navegar_url:"):]
+                try:
+                    title = navegador.navegar(url)
+                    resultado_anterior = f"Navegado a {title}."
+                    ultimo_mensaje = resultado_anterior
+                except Exception as e:
+                    resultado_anterior = f"Error navegando: {e}"
+            elif paso == "responder":
+                # Ask Claude to formulate a final answer based on accumulated context
+                try:
+                    r = self.client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=200,
+                        system="Eres Luna, asistente de voz. Responde en español, máximo 2 oraciones, de forma natural y directa. Sin markdown.",
+                        messages=[{"role": "user", "content": f"Basándote en esta información, da una respuesta útil al usuario:\n{resultado_anterior}"}]
+                    )
+                    ultimo_mensaje = r.content[0].text.strip()
+                    resultado_anterior = ultimo_mensaje
+                except Exception as e:
+                    print(f"[ERROR PLAN RESPONDER] {e}")
+        return ultimo_mensaje or resultado_anterior
 
 # ─────────────────────────────────────────
 # MAIN
@@ -626,6 +799,7 @@ def main():
     voz      = Voz(keys["ELEVENLABS_API_KEY"])
     mic      = Microfono()
     pc       = ControlPC()
+    mouse    = ControlMouse()
     pc.programas_extra = memoria.get("programas", {})
     cerebro  = Cerebro(keys["ANTHROPIC_API_KEY"], memoria)
 
@@ -702,6 +876,11 @@ def main():
             mem_valor     = resp.get("memoria_valor")
             prog_nombre   = resp.get("prog_nombre")
             prog_ruta     = resp.get("prog_ruta")
+            mouse_x       = resp.get("mouse_x")
+            mouse_y       = resp.get("mouse_y")
+            texto_escribir = resp.get("texto_escribir")
+            teclas        = resp.get("teclas")
+            pasos         = resp.get("pasos")
             mensaje       = resp.get("mensaje", "Hecho!")
 
             if accion == "abrir_programa" and programa:
@@ -782,6 +961,38 @@ def main():
                     if mem_valor not in cerebro.memoria["notas"]:
                         cerebro.memoria["notas"].append(mem_valor)
                 guardar_memoria(cerebro.memoria)
+
+            # ── Feature 3: Mouse / keyboard actions ──
+            elif accion == "mouse_click":
+                if mouse_x is not None and mouse_y is not None:
+                    if not mouse.click(int(mouse_x), int(mouse_y)):
+                        mensaje = "No pude hacer clic en esa posición."
+                else:
+                    mensaje = "Necesito las coordenadas para hacer clic."
+
+            elif accion == "escribir_texto":
+                if texto_escribir:
+                    if not mouse.escribir(texto_escribir):
+                        mensaje = "No pude escribir el texto."
+                else:
+                    mensaje = "No recibí el texto a escribir."
+
+            elif accion == "hotkey":
+                if teclas:
+                    keys_list = [k.strip() for k in teclas.replace("+", " ").split()]
+                    if not mouse.hotkey(*keys_list):
+                        mensaje = "No pude ejecutar el atajo de teclado."
+                else:
+                    mensaje = "No recibí las teclas para el atajo."
+
+            elif accion == "screenshot":
+                descripcion = mouse.screenshot_y_analizar(texto_procesar, cerebro)
+                mensaje = descripcion
+
+            # ── Feature 1: Multi-step plan ──
+            elif accion == "plan" and pasos:
+                voz.hablar(mensaje)
+                mensaje = cerebro.ejecutar_plan(pasos, texto_procesar, navegador, cerebro)
 
             # Hablar y esperar que termine antes de volver a escuchar
             hilo_voz = threading.Thread(target=voz.hablar, args=(mensaje,), daemon=True)
