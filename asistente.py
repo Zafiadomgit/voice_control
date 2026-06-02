@@ -509,24 +509,35 @@ def main():
 
     voz.hablar("Hola! Soy Jade, tu asistente personal. Llámame cuando me necesites.")
 
-    modo_activo    = False
-    turnos_activos = 0
+    modo_activo      = False
+    turnos_activos   = 0
+    ultimo_texto     = 0
 
     while True:
         try:
             texto = mic.escuchar()
+
+            # En standby: silencio no hace nada
+            # En modo activo: si pasan 15s sin hablar, vuelve a standby
             if not texto:
-                modo_activo = False
+                if modo_activo and (time.time() - ultimo_texto > 15):
+                    print("[timeout] Volviendo a standby")
+                    modo_activo = False
                 continue
 
+            ultimo_texto = time.time()
             print(f"👤 [{'ON' if modo_activo else 'standby'}] {texto}")
 
             # ── Standby: esperar wake word ──
+            WAKE_WORDS = ["jade", "jad", "yade", "yad"]
             if not modo_activo:
-                if WAKE_WORD in texto:
+                if any(w in texto for w in WAKE_WORDS):
                     modo_activo    = True
                     turnos_activos = 0
-                    comando = texto.replace(WAKE_WORD, "").strip()
+                    # quitar el wake word del texto
+                    comando = texto
+                    for w in WAKE_WORDS:
+                        comando = comando.replace(w, "").strip()
                     if len(comando) > 3:
                         texto_procesar = comando
                     else:
@@ -538,7 +549,7 @@ def main():
                 texto_procesar = texto
 
             # ── Desactivar ──
-            if any(p in texto for p in ["adiós jade","bye jade","gracias jade","ok gracias","para de escuchar","goodbye jade"]):
+            if any(p in texto for p in ["adiós","bye","gracias","para de escuchar","silencio","stop"]):
                 voz.hablar("Listo, llámame cuando me necesites!")
                 modo_activo = False
                 continue
@@ -619,7 +630,7 @@ def main():
             voz.hablar(mensaje)
 
             turnos_activos += 1
-            if turnos_activos >= 6:
+            if turnos_activos >= 8:
                 modo_activo = False
 
         except KeyboardInterrupt:
