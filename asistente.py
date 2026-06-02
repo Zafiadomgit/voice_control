@@ -1,15 +1,13 @@
 """
 JADE - VOICE ASSISTANT
 ======================
-- ElevenLabs voice (Jessica)
-- Wake word: "Jade"
-- Background browser (Playwright)
-- "show me" / "muéstrame" -> opens Opera GX
-- Program control
-- PC control (shutdown, restart, volume, brightness)
+- ElevenLabs voice (Laura, multilingual)
+- Wake word: "Jade" (flexible, standby sensible)
+- Background browser (Playwright) + DuckDuckGo search
+- Program control + PC control (shutdown, restart, volume, brightness)
 - Claude Code integration via voice
-- Whisper local STT (faster-whisper)
-- Spanish + English
+- Google STT (español)
+- Memoria persistente (nombre, preferencias)
 - Python 3.10+ Windows
 
 .env file:
@@ -29,6 +27,7 @@ WAKE_WORD        = "jade"
 ELEVENLABS_VOICE = "FGY2WhTYpPnrIDTdsKH5"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
+MEMORIA_PATH     = Path(__file__).parent / "memoria.json"
 
 # ─────────────────────────────────────────
 # ENV
@@ -47,6 +46,31 @@ def cargar_env():
         if k not in keys and os.environ.get(k):
             keys[k] = os.environ[k]
     return keys
+
+# ─────────────────────────────────────────
+# MEMORIA
+# ─────────────────────────────────────────
+
+def cargar_memoria():
+    if MEMORIA_PATH.exists():
+        try:
+            return json.loads(MEMORIA_PATH.read_text(encoding="utf-8"))
+        except:
+            pass
+    return {"nombre": None, "preferencias": [], "notas": []}
+
+def guardar_memoria(mem):
+    MEMORIA_PATH.write_text(json.dumps(mem, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def memoria_a_texto(mem):
+    partes = []
+    if mem.get("nombre"):
+        partes.append(f"El nombre del usuario es {mem['nombre']}.")
+    if mem.get("preferencias"):
+        partes.append("Preferencias del usuario: " + "; ".join(mem["preferencias"]) + ".")
+    if mem.get("notas"):
+        partes.append("Notas guardadas: " + "; ".join(mem["notas"]) + ".")
+    return "\n".join(partes) if partes else ""
 
 # ─────────────────────────────────────────
 # PROGRAMS
@@ -140,28 +164,23 @@ class Voz:
                     pass
 
 # ─────────────────────────────────────────
-# MICROPHONE — Whisper local STT
+# MICROPHONE — Google STT, modo standby vs activo
 # ─────────────────────────────────────────
 
 class Microfono:
     def __init__(self):
         self.sample_rate = 16000
-        self._init_whisper()
-
-    def _init_whisper(self):
         import speech_recognition as sr
         self.recognizer = sr.Recognizer()
         self.recognizer.energy_threshold = 300
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 1.2  # espera más antes de cortar
-        self.usar_whisper = False
         print("🎙️  Google STT listo (español)")
 
-    def grabar(self):
-        chunk = int(self.sample_rate * 0.03)   # 30ms chunks
-        chunks_sil = int(0.7 / 0.03)           # 0.7s de silencio para cortar
-        chunks_max = int(8 / 0.03)             # máximo 8s de grabación
-        chunks_sin_voz = int(2.5 / 0.03)       # si no hay voz en 2.5s, salir
+    def grabar(self, max_segundos=8, silencio_segundos=1.2, timeout_sin_voz=2.5):
+        chunk = int(self.sample_rate * 0.03)
+        chunks_sil     = int(silencio_segundos / 0.03)
+        chunks_max     = int(max_segundos / 0.03)
+        chunks_sin_voz = int(timeout_sin_voz / 0.03)
         grabando, silencio, hablo, sin_voz = [], 0, False, 0
         with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='float32') as stream:
             for _ in range(chunks_max):
@@ -182,71 +201,31 @@ class Microfono:
                         break
         return (np.concatenate(grabando) * 32767).astype(np.int16)
 
-    def escuchar(self):
+    def escuchar(self, modo_standby=False):
         try:
-            data = self.grabar()
-            if len(data) < 2000:
+            # En standby: frases cortas, corta rápido
+            if modo_standby:
+                data = self.grabar(max_segundos=4, silencio_segundos=0.6, timeout_sin_voz=1.5)
+            else:
+                data = self.grabar(max_segundos=10, silencio_segundos=1.2, timeout_sin_voz=2.5)
+
+            if len(data) < 1500:
                 return None
 
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 path = f.name
-            import scipy.io.wavfile as wav_io
             wav_io.write(path, self.sample_rate, data)
 
-            if self.usar_whisper:
-                texto = self._transcribir_whisper(path)
-            else:
-                texto = self._transcribir_google(path)
-
-            os.unlink(path)
-            return texto
-        except Exception as e:
-            print(f"Mic error: {e}")
-            return None
-
-    def _transcribir_whisper(self, path):
-        try:
-            segments, info = self.model.transcribe(
-                path,
-                language="es",
-                beam_size=5,
-                condition_on_previous_text=False,
-                no_speech_threshold=0.6,
-                log_prob_threshold=-1.0,
-                compression_ratio_threshold=2.4,
-                initial_prompt="Jade asistente de voz. Comandos en español.",
-            )
-            partes = [s.text.strip() for s in segments]
-            # quitar repeticiones consecutivas
-            sin_repeticiones = []
-            for p in partes:
-                if not sin_repeticiones or p.lower() != sin_repeticiones[-1].lower():
-                    sin_repeticiones.append(p)
-            resultado = " ".join(sin_repeticiones).strip().lower()
-            if not resultado or len(resultado) < 2:
-                return None
-            return resultado
-        except Exception as e:
-            print(f"[WHISPER ERROR] {e}")
-            return None
-
-    def _transcribir_google(self, path):
-        try:
             import speech_recognition as sr
             with sr.AudioFile(path) as src:
                 audio = self.recognizer.record(src)
+            os.unlink(path)
             return self.recognizer.recognize_google(audio, language="es-ES").lower().strip()
-        except sr.UnknownValueError:
-            return None
-        except sr.RequestError as e:
-            print(f"[GOOGLE STT sin conexión] {e}")
-            return None
-        except Exception as e:
-            print(f"[GOOGLE STT ERROR] {e}")
+        except Exception:
             return None
 
 # ─────────────────────────────────────────
-# BROWSER — Playwright sync, headless
+# BROWSER — DuckDuckGo search, Opera GX focus
 # ─────────────────────────────────────────
 
 class Navegador:
@@ -256,37 +235,57 @@ class Navegador:
         self.browser = self._pw.chromium.launch(headless=True)
         self.context = self.browser.new_context()
         self.page    = self.context.new_page()
-        print("🌐 Background browser ready")
+        self._last_search_url = None
+        print("🌐 Navegador en segundo plano listo")
 
     def mostrar(self):
+        url = self._last_search_url or "https://duckduckgo.com"
         try:
-            url = getattr(self, "_last_search_url", None) or self.page.evaluate("window.location.href")
+            # Abrir Opera GX con la URL
             if os.path.exists(OPERA_PATH):
                 subprocess.Popen([OPERA_PATH, url])
             else:
                 os.startfile(url)
+
+            # Traer Opera GX al primer plano después de un momento
+            time.sleep(1.5)
+            self._enfocar_ventana("Opera")
             return url
         except Exception as e:
             print(f"[ERROR SHOW] {e}")
             return None
 
-    def buscar_google(self, query):
-        # DuckDuckGo HTML search — no bot blocking
+    def _enfocar_ventana(self, nombre_parcial):
+        try:
+            import win32gui, win32con
+            def callback(hwnd, resultados):
+                if win32gui.IsWindowVisible(hwnd):
+                    titulo = win32gui.GetWindowText(hwnd)
+                    if nombre_parcial.lower() in titulo.lower():
+                        resultados.append(hwnd)
+            hwnds = []
+            win32gui.EnumWindows(callback, hwnds)
+            if hwnds:
+                hwnd = hwnds[0]
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print(f"[FOCUS ERROR] {e}")
+
+    def buscar(self, query):
         try:
             import urllib.request, urllib.parse, re
             q = urllib.parse.quote(query)
+            self._last_search_url = f"https://duckduckgo.com/?q={q}"
             req = urllib.request.Request(
                 f"https://html.duckduckgo.com/html/?q={q}",
                 headers={"User-Agent": "Mozilla/5.0"}
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
-            # extract result titles
             titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]*>(.*?)</a>', html, re.DOTALL)
             titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles if t.strip()]
             titles = [t for t in titles if len(t) > 5][:3]
-            # also store last search URL for "show me"
-            self._last_search_url = f"https://duckduckgo.com/?q={q}"
             return titles
         except Exception as e:
             print(f"[ERROR SEARCH] {e}")
@@ -296,22 +295,13 @@ class Navegador:
         try:
             if not url.startswith("http"):
                 url = "https://" + url
+            self._last_search_url = url
             self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            self.page.wait_for_timeout(2000)
+            self.page.wait_for_timeout(1500)
             return self.page.title()
         except Exception as e:
             print(f"[ERROR NAV] {e}")
             return url
-
-    def leer_pagina(self):
-        try:
-            return self.page.evaluate("""() => {
-                const clone = document.body.cloneNode(true);
-                clone.querySelectorAll('script,style,nav,footer,header').forEach(e=>e.remove());
-                return clone.innerText.substring(0,2000);
-            }""")
-        except:
-            return ""
 
     def cerrar(self):
         try:
@@ -321,17 +311,14 @@ class Navegador:
             pass
 
 # ─────────────────────────────────────────
-# PC CONTROL — programs, shutdown, volume, brightness, Claude Code
+# PC CONTROL
 # ─────────────────────────────────────────
 
 class ControlPC:
     def abrir(self, nombre):
         n = nombre.lower().strip()
-
-        # Special: open Claude Code in a new terminal window
-        if "claude code" in n or "claude código" in n:
+        if "claude code" in n:
             return self._abrir_claude_code()
-
         for k, v in PROGRAMAS.items():
             if k in n or n in k:
                 ruta = os.path.expandvars(v)
@@ -339,8 +326,7 @@ class ControlPC:
                     import ctypes
                     ctypes.windll.shell32.ShellExecuteW(None, "open", ruta, None, None, 1)
                     return True
-                except Exception as e:
-                    print(f"Error opening {k}: {e}")
+                except:
                     try:
                         subprocess.Popen(ruta, shell=True)
                         return True
@@ -354,13 +340,8 @@ class ControlPC:
 
     def _abrir_claude_code(self, prompt=None):
         try:
-            cmd = "claude"
-            if prompt:
-                cmd = f'claude "{prompt}"'
-            subprocess.Popen(
-                f'start cmd /k {cmd}',
-                shell=True
-            )
+            cmd = f'start cmd /k claude' + (f' "{prompt}"' if prompt else '')
+            subprocess.Popen(cmd, shell=True)
             return True
         except Exception as e:
             print(f"[ERROR CLAUDE CODE] {e}")
@@ -371,10 +352,7 @@ class ControlPC:
 
     def apagar(self, reiniciar=False):
         try:
-            if reiniciar:
-                subprocess.Popen("shutdown /r /t 10", shell=True)
-            else:
-                subprocess.Popen("shutdown /s /t 10", shell=True)
+            subprocess.Popen(f"shutdown /{'r' if reiniciar else 's'} /t 10", shell=True)
             return True
         except Exception as e:
             print(f"[ERROR SHUTDOWN] {e}")
@@ -388,7 +366,6 @@ class ControlPC:
             return False
 
     def volumen(self, accion, cantidad=10):
-        """accion: 'subir' | 'bajar' | 'silenciar' | 'activar'"""
         try:
             from ctypes import cast, POINTER
             from comtypes import CLSCTX_ALL
@@ -396,7 +373,6 @@ class ControlPC:
             devices = AudioUtilities.GetSpeakers()
             interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
             volume = cast(interface, POINTER(IAudioEndpointVolume))
-
             if accion == "silenciar":
                 volume.SetMute(1, None)
             elif accion == "activar":
@@ -408,37 +384,21 @@ class ControlPC:
                 volume.SetMasterVolumeLevelScalar(new_vol, None)
             return True
         except Exception as e:
-            # Fallback: use nircmd if pycaw not available
-            try:
-                if accion == "subir":
-                    subprocess.Popen(f"nircmd changedefaultsounddevice volume +{cantidad*655}", shell=True)
-                elif accion == "bajar":
-                    subprocess.Popen(f"nircmd changedefaultsounddevice volume -{cantidad*655}", shell=True)
-                elif accion == "silenciar":
-                    subprocess.Popen("nircmd mutesysvolume 1", shell=True)
-                elif accion == "activar":
-                    subprocess.Popen("nircmd mutesysvolume 0", shell=True)
-                return True
-            except:
-                print(f"[ERROR VOLUME] {e}")
-                return False
+            print(f"[ERROR VOLUME] {e}")
+            return False
 
     def brillo(self, accion, cantidad=10):
-        """accion: 'subir' | 'bajar' | 'establecer'; cantidad: 0-100"""
         try:
             import wmi
             c = wmi.WMI(namespace='wmi')
             methods = c.WmiMonitorBrightnessMethods()[0]
-            brightness_obj = c.WmiMonitorBrightness()[0]
-            current = brightness_obj.CurrentBrightness
-
+            current = c.WmiMonitorBrightness()[0].CurrentBrightness
             if accion == "subir":
                 new_val = min(100, current + cantidad)
             elif accion == "bajar":
                 new_val = max(0, current - cantidad)
             else:
                 new_val = max(0, min(100, cantidad))
-
             methods.WmiSetBrightness(new_val, 0)
             return True
         except Exception as e:
@@ -449,42 +409,47 @@ class ControlPC:
 # BRAIN
 # ─────────────────────────────────────────
 
-SYSTEM_PROMPT = """Eres Jade, una asistente de voz personal que controla un PC con Windows.
-Respondes en español. Si el usuario habla en inglés, igual respondes en español.
+SYSTEM_PROMPT_BASE = """Eres Jade, una asistente de voz personal que controla un PC con Windows.
+Respondes siempre en español, con naturalidad y brevedad.
+
+{memoria}
 
 Puedes hacer:
 1. Abrir programas: LOL, Steam, Opera GX, Discord, Spotify, VSCode, Chrome, WhatsApp, Claude, Claude Code, etc.
-2. Buscar en la web en segundo plano y reportar resultados
-3. Navegar a sitios web específicos
-4. Controlar el PC: apagar, reiniciar, subir/bajar volumen, subir/bajar brillo
-5. Abrir Claude Code con un prompt específico para programar
-6. Responder preguntas y mantener conversación natural
+2. Buscar en la web y reportar resultados
+3. Navegar a sitios web
+4. Controlar el PC: apagar, reiniciar, volumen, brillo
+5. Abrir Claude Code con un prompt de voz
+6. Recordar información del usuario (nombre, preferencias, notas)
+7. Conversación natural
 
 RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
-{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"responder",
+{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"responder",
  "programa":"nombre o null",
  "query":"búsqueda o null",
  "url":"url o null",
  "subaccion":"subir"|"bajar"|"silenciar"|"activar"|"establecer" o null,
  "cantidad":número o null,
  "prompt_claude":"tarea para claude code o null",
+ "memoria_key":"nombre"|"preferencia"|"nota" o null,
+ "memoria_valor":"valor a guardar o null",
  "mensaje":"respuesta en español, máximo 2 oraciones"}
 
-EJEMPLOS:
-"jade abre el lol" -> {"accion":"abrir_programa","programa":"lol","query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Claro, abriendo League of Legends!"}
-"jade busca vuelos a Brasil" -> {"accion":"buscar_web","programa":null,"query":"vuelos baratos a Brasil 2025","url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Buscando vuelos a Brasil, dame un segundo."}
-"jade apaga el pc" -> {"accion":"apagar_pc","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Apagando el PC en 10 segundos. Di cancela si te arrepentiste."}
-"jade reinicia" -> {"accion":"reiniciar_pc","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Reiniciando el PC en 10 segundos."}
-"jade sube el volumen" -> {"accion":"volumen","programa":null,"query":null,"url":null,"subaccion":"subir","cantidad":10,"prompt_claude":null,"mensaje":"Subiendo el volumen."}
-"jade silencia" -> {"accion":"volumen","programa":null,"query":null,"url":null,"subaccion":"silenciar","cantidad":null,"prompt_claude":null,"mensaje":"Silenciando el audio."}
-"jade baja el brillo" -> {"accion":"brillo","programa":null,"query":null,"url":null,"subaccion":"bajar","cantidad":10,"prompt_claude":null,"mensaje":"Bajando el brillo."}
-"jade abre claude code y crea un script de python" -> {"accion":"claude_code","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":"crea un script de python que...","mensaje":"Abriendo Claude Code con tu tarea."}
-"jade muéstrame" -> {"accion":"mostrar_navegador","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Abriendo Opera GX para que veas!"}"""
+GUARDAR MEMORIA — cuando el usuario diga su nombre, una preferencia o algo que quiera que recuerdes:
+"me llamo David" -> {"accion":"guardar_memoria","memoria_key":"nombre","memoria_valor":"David","mensaje":"Perfecto, ya sé que te llamas David!"}
+"prefiero resultados en español" -> {"accion":"guardar_memoria","memoria_key":"preferencia","memoria_valor":"prefiere resultados en español","mensaje":"Anotado, buscaré en español."}
+"recuerda que trabajo de noche" -> {"accion":"guardar_memoria","memoria_key":"nota","memoria_valor":"trabaja de noche","mensaje":"Lo tengo en cuenta!"}"""
 
 class Cerebro:
-    def __init__(self, api_key):
+    def __init__(self, api_key, memoria):
         self.client    = anthropic.Anthropic(api_key=api_key)
         self.historial = []
+        self.memoria   = memoria
+
+    def system_prompt(self):
+        mem_texto = memoria_a_texto(self.memoria)
+        bloque = f"\nINFORMACIÓN DEL USUARIO:\n{mem_texto}" if mem_texto else ""
+        return SYSTEM_PROMPT_BASE.replace("{memoria}", bloque)
 
     def procesar(self, texto):
         self.historial.append({"role": "user", "content": texto})
@@ -494,7 +459,7 @@ class Cerebro:
             r = self.client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=300,
-                system=SYSTEM_PROMPT,
+                system=self.system_prompt(),
                 messages=self.historial
             )
             raw = r.content[0].text.strip().replace("```json","").replace("```","").strip()
@@ -502,10 +467,10 @@ class Cerebro:
             self.historial.append({"role": "assistant", "content": raw})
             return json.loads(raw)
         except json.JSONDecodeError:
-            return {"accion":"responder","programa":None,"query":None,"url":None,"subaccion":None,"cantidad":None,"prompt_claude":None,"mensaje":"Un momento, tuve un problema procesando eso."}
+            return {"accion":"responder","mensaje":"Un momento, tuve un problema procesando eso."}
         except Exception as e:
             print(f"[ERROR API] {e}")
-            return {"accion":"responder","programa":None,"query":None,"url":None,"subaccion":None,"cantidad":None,"prompt_claude":None,"mensaje":"Problemas de conexión, intenta de nuevo."}
+            return {"accion":"responder","mensaje":"Problemas de conexión, intenta de nuevo."}
 
 # ─────────────────────────────────────────
 # MAIN
@@ -522,30 +487,34 @@ def main():
     if "ELEVENLABS_API_KEY" not in keys:
         print("❌ Falta ELEVENLABS_API_KEY en .env"); sys.exit(1)
 
+    memoria  = cargar_memoria()
+    print(f"🧠 Memoria cargada: {memoria}")
+
     print("🔧 Iniciando...\n")
     voz      = Voz(keys["ELEVENLABS_API_KEY"])
     mic      = Microfono()
     pc       = ControlPC()
-    cerebro  = Cerebro(keys["ANTHROPIC_API_KEY"])
+    cerebro  = Cerebro(keys["ANTHROPIC_API_KEY"], memoria)
 
     print("🌐 Iniciando navegador en segundo plano...")
     navegador = Navegador()
 
-    print(f"\n✅ Listo! Di '{WAKE_WORD.upper()}' para activarme | Ctrl+C para salir\n")
+    nombre = memoria.get("nombre") or "usuario"
+    print(f"\n✅ Listo! Di 'JADE' para activarme | Ctrl+C para salir\n")
     print("-"*52)
 
-    voz.hablar("Hola! Soy Jade, tu asistente personal. Llámame cuando me necesites.")
+    saludo = f"Hola {nombre}! Aquí estoy." if memoria.get("nombre") else "Hola! Soy Jade, tu asistente personal. Llámame cuando me necesites."
+    voz.hablar(saludo)
 
-    modo_activo      = False
-    turnos_activos   = 0
-    ultimo_texto     = 0
+    modo_activo    = False
+    turnos_activos = 0
+    ultimo_texto   = 0
+    WAKE_WORDS     = ["jade", "jad", "yade"]
 
     while True:
         try:
-            texto = mic.escuchar()
+            texto = mic.escuchar(modo_standby=not modo_activo)
 
-            # En standby: silencio no hace nada
-            # En modo activo: si pasan 15s sin hablar, vuelve a standby
             if not texto:
                 if modo_activo and (time.time() - ultimo_texto > 15):
                     print("[timeout] Volviendo a standby")
@@ -555,16 +524,14 @@ def main():
             ultimo_texto = time.time()
             print(f"👤 [{'ON' if modo_activo else 'standby'}] {texto}")
 
-            # ── Standby: esperar wake word ──
-            WAKE_WORDS = ["jade", "jad", "yade", "yad"]
+            # ── Standby: cualquier frase con "jade" activa ──
             if not modo_activo:
                 if any(w in texto for w in WAKE_WORDS):
                     modo_activo    = True
                     turnos_activos = 0
-                    # quitar el wake word del texto
                     comando = texto
                     for w in WAKE_WORDS:
-                        comando = comando.replace(w, "").strip()
+                        comando = comando.replace(w, "").strip(" ,.")
                     if len(comando) > 3:
                         texto_procesar = comando
                     else:
@@ -589,6 +556,8 @@ def main():
             subaccion     = resp.get("subaccion")
             cantidad      = resp.get("cantidad") or 10
             prompt_claude = resp.get("prompt_claude")
+            mem_key       = resp.get("memoria_key")
+            mem_valor     = resp.get("memoria_valor")
             mensaje       = resp.get("mensaje", "Hecho!")
 
             if accion == "abrir_programa" and programa:
@@ -598,15 +567,15 @@ def main():
             elif accion == "buscar_web" and query:
                 voz.hablar(mensaje)
                 try:
-                    resultados = navegador.buscar_google(query)
+                    resultados = navegador.buscar(query)
                     if resultados:
                         resumen = ". ".join(resultados[:2])
-                        mensaje = f"Esto es lo que encontré: {resumen}. Di muéstrame para abrir Opera GX."
+                        mensaje = f"Encontré esto: {resumen}. Di muéstrame para verlo en Opera GX."
                     else:
-                        mensaje = "Busqué pero no encontré resultados claros. Di muéstrame para ver el navegador."
+                        mensaje = "Busqué pero no encontré resultados. Di muéstrame para ver el navegador."
                 except Exception as e:
                     print(f"[ERROR BROWSER] {e}")
-                    mensaje = "Tuve un problema con el navegador, intenta de nuevo."
+                    mensaje = "Tuve un problema buscando, intenta de nuevo."
 
             elif accion == "navegar_url" and url:
                 voz.hablar(mensaje)
@@ -614,45 +583,48 @@ def main():
                     title = navegador.navegar(url)
                     mensaje = f"Estoy en {title}. Di muéstrame si quieres verlo."
                 except Exception as e:
-                    print(f"[ERROR NAV] {e}")
                     mensaje = "Tuve un problema navegando a ese sitio."
 
             elif accion == "mostrar_navegador":
                 try:
                     navegador.mostrar()
-                    mensaje = "Abriendo Opera GX!"
+                    mensaje = "Abriendo Opera GX en primer plano!"
                 except Exception as e:
-                    print(f"[ERROR SHOW] {e}")
                     mensaje = "No pude abrir el navegador."
 
             elif accion == "apagar_pc":
-                if pc.apagar(reiniciar=False):
-                    mensaje = mensaje
-                else:
-                    mensaje = "No pude iniciar el apagado."
+                pc.apagar(reiniciar=False)
 
             elif accion == "reiniciar_pc":
-                if pc.apagar(reiniciar=True):
-                    mensaje = mensaje
-                else:
-                    mensaje = "No pude reiniciar el PC."
+                pc.apagar(reiniciar=True)
 
             elif accion == "cancelar_apagado":
                 pc.cancelar_apagado()
 
             elif accion == "volumen" and subaccion:
                 if not pc.volumen(subaccion, int(cantidad)):
-                    mensaje = "No pude ajustar el volumen. Puede que necesites instalar pycaw."
+                    mensaje = "No pude ajustar el volumen."
 
             elif accion == "brillo" and subaccion:
                 if not pc.brillo(subaccion, int(cantidad)):
-                    mensaje = "No pude ajustar el brillo. Solo funciona en laptops con pantalla integrada."
+                    mensaje = "No pude ajustar el brillo. Solo funciona en laptops."
 
             elif accion == "claude_code":
                 if prompt_claude:
                     pc.claude_code_con_prompt(prompt_claude)
                 else:
                     pc.abrir("claude code")
+
+            elif accion == "guardar_memoria" and mem_key and mem_valor:
+                if mem_key == "nombre":
+                    cerebro.memoria["nombre"] = mem_valor
+                elif mem_key == "preferencia":
+                    if mem_valor not in cerebro.memoria["preferencias"]:
+                        cerebro.memoria["preferencias"].append(mem_valor)
+                elif mem_key == "nota":
+                    if mem_valor not in cerebro.memoria["notas"]:
+                        cerebro.memoria["notas"].append(mem_valor)
+                guardar_memoria(cerebro.memoria)
 
             voz.hablar(mensaje)
 
