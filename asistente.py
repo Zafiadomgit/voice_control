@@ -22,6 +22,7 @@ import scipy.io.wavfile as wav_io
 import anthropic
 from pathlib import Path
 from playsound3 import playsound
+from datetime import datetime, timedelta
 
 WAKE_WORD        = "luna"
 ELEVENLABS_VOICE = "FGY2WhTYpPnrIDTdsKH5"
@@ -604,6 +605,266 @@ class ControlMouse:
 # BRAIN
 # ─────────────────────────────────────────
 
+# ─────────────────────────────────────────
+# RECORDATORIOS
+# ─────────────────────────────────────────
+
+class GestorRecordatorios:
+    def __init__(self, voz):
+        self.voz = voz
+        self.recordatorios = []
+        self._hilo = threading.Thread(target=self._loop, daemon=True)
+        self._hilo.start()
+
+    def agregar(self, mensaje, segundos):
+        cuando = datetime.now() + timedelta(seconds=segundos)
+        self.recordatorios.append({"mensaje": mensaje, "cuando": cuando})
+        print(f"[RECORDATORIO] Programado: '{mensaje}' en {segundos}s")
+
+    def _loop(self):
+        while True:
+            ahora = datetime.now()
+            pendientes = []
+            for r in self.recordatorios:
+                if ahora >= r["cuando"]:
+                    self.voz.hablar(f"Recordatorio: {r['mensaje']}")
+                else:
+                    pendientes.append(r)
+            self.recordatorios = pendientes
+            time.sleep(5)
+
+# ─────────────────────────────────────────
+# MONITOR DEL SISTEMA
+# ─────────────────────────────────────────
+
+class MonitorSistema:
+    def __init__(self, voz):
+        self.voz = voz
+        self.inicio_sesion = datetime.now()
+        self._alertas = {"cpu": False, "ram": False, "disco": False, "tiempo": False}
+        self._hilo = threading.Thread(target=self._loop, daemon=True)
+        self._hilo.start()
+
+    def _loop(self):
+        while True:
+            try:
+                import psutil
+                cpu = psutil.cpu_percent(interval=2)
+                ram = psutil.virtual_memory().percent
+                disco = psutil.disk_usage('/').percent
+
+                if cpu > 90 and not self._alertas["cpu"]:
+                    self._alertas["cpu"] = True
+                    self.voz.hablar(f"Alerta: el CPU está al {int(cpu)} porciento.")
+                elif cpu < 70:
+                    self._alertas["cpu"] = False
+
+                if ram > 90 and not self._alertas["ram"]:
+                    self._alertas["ram"] = True
+                    self.voz.hablar(f"Alerta: la memoria RAM está al {int(ram)} porciento.")
+                elif ram < 80:
+                    self._alertas["ram"] = False
+
+                if disco > 95 and not self._alertas["disco"]:
+                    self._alertas["disco"] = True
+                    self.voz.hablar("Alerta: el disco duro está casi lleno.")
+
+                # Alerta por tiempo frente al PC cada 2 horas
+                minutos = (datetime.now() - self.inicio_sesion).seconds // 60
+                if minutos > 0 and minutos % 120 == 0 and not self._alertas["tiempo"]:
+                    self._alertas["tiempo"] = True
+                    horas = minutos // 60
+                    self.voz.hablar(f"Llevas {horas} hora{'s' if horas>1 else ''} frente al PC. Considera tomar un descanso.")
+                elif minutos % 120 != 0:
+                    self._alertas["tiempo"] = False
+
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"[MONITOR] {e}")
+            time.sleep(30)
+
+    def estado(self):
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=1)
+            ram = psutil.virtual_memory().percent
+            disco = psutil.disk_usage('/').percent
+            minutos = (datetime.now() - self.inicio_sesion).seconds // 60
+            return f"CPU al {int(cpu)}%, RAM al {int(ram)}%, disco al {int(disco)}%, llevas {minutos} minutos en sesión."
+        except:
+            return "No puedo leer el estado del sistema."
+
+# ─────────────────────────────────────────
+# GESTIÓN DE VENTANAS
+# ─────────────────────────────────────────
+
+class GestorVentanas:
+    def _ventanas(self, nombre=None):
+        try:
+            import win32gui, win32con
+            resultado = []
+            def cb(hwnd, _):
+                if win32gui.IsWindowVisible(hwnd):
+                    t = win32gui.GetWindowText(hwnd)
+                    if t and (nombre is None or nombre.lower() in t.lower()):
+                        resultado.append((hwnd, t))
+            win32gui.EnumWindows(cb, None)
+            return resultado
+        except:
+            return []
+
+    def enfocar(self, nombre):
+        import win32gui, win32con
+        for hwnd, titulo in self._ventanas(nombre):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            return f"Enfocando {titulo}."
+        return f"No encontré ventana con '{nombre}'."
+
+    def maximizar(self, nombre):
+        import win32gui, win32con
+        for hwnd, titulo in self._ventanas(nombre):
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            return f"Maximizando {titulo}."
+        return f"No encontré '{nombre}'."
+
+    def minimizar(self, nombre):
+        import win32gui, win32con
+        for hwnd, titulo in self._ventanas(nombre):
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            return f"Minimizando {titulo}."
+        return f"No encontré '{nombre}'."
+
+    def cerrar(self, nombre):
+        import win32gui, win32con
+        for hwnd, titulo in self._ventanas(nombre):
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            return f"Cerrando {titulo}."
+        return f"No encontré '{nombre}'."
+
+    def listar(self):
+        ventanas = self._ventanas()
+        nombres = [t for _, t in ventanas[:8]]
+        return "Ventanas abiertas: " + ", ".join(nombres) if nombres else "No hay ventanas abiertas."
+
+# ─────────────────────────────────────────
+# BÚSQUEDA DE ARCHIVOS
+# ─────────────────────────────────────────
+
+class BuscadorArchivos:
+    CARPETAS = [
+        os.path.expanduser("~/Desktop"),
+        os.path.expanduser("~/Documents"),
+        os.path.expanduser("~/Downloads"),
+        os.path.expanduser("~/OneDrive"),
+        os.path.expanduser("~/OneDrive/Escritorio"),
+        os.path.expanduser("~/OneDrive/Documentos"),
+    ]
+
+    def buscar(self, nombre, max_resultados=5):
+        resultados = []
+        try:
+            for carpeta in self.CARPETAS:
+                if not os.path.exists(carpeta):
+                    continue
+                for root, dirs, files in os.walk(carpeta):
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
+                    for f in files:
+                        if nombre.lower() in f.lower():
+                            resultados.append(os.path.join(root, f))
+                            if len(resultados) >= max_resultados:
+                                return resultados
+        except Exception as e:
+            print(f"[BUSCAR ARCHIVOS] {e}")
+        return resultados
+
+    def abrir(self, ruta):
+        try:
+            os.startfile(ruta)
+            return True
+        except:
+            return False
+
+# ─────────────────────────────────────────
+# WHATSAPP WEB
+# ─────────────────────────────────────────
+
+class WhatsAppWeb:
+    def __init__(self, navegador_playwright):
+        self._nav = navegador_playwright
+        self._listo = False
+
+    def abrir(self):
+        try:
+            self._nav.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=20000)
+            self._nav.page.wait_for_timeout(5000)
+            self._listo = True
+            return True
+        except:
+            return False
+
+    def enviar(self, contacto, mensaje):
+        try:
+            page = self._nav.page
+            if "web.whatsapp.com" not in page.url:
+                self.abrir()
+            # Buscar contacto
+            page.click('[data-icon="search"]')
+            page.wait_for_timeout(500)
+            page.keyboard.type(contacto)
+            page.wait_for_timeout(2000)
+            # Click primer resultado
+            resultados = page.query_selector_all('[data-testid="cell-frame-container"]')
+            if not resultados:
+                return False
+            resultados[0].click()
+            page.wait_for_timeout(1000)
+            # Escribir y enviar
+            caja = page.query_selector('[data-testid="conversation-compose-box-input"]')
+            if not caja:
+                return False
+            caja.click()
+            caja.type(mensaje)
+            page.keyboard.press("Enter")
+            return True
+        except Exception as e:
+            print(f"[WHATSAPP] {e}")
+            return False
+
+# ─────────────────────────────────────────
+# APRENDIZAJE DE HÁBITOS
+# ─────────────────────────────────────────
+
+class AprendizajeHabitos:
+    def __init__(self, memoria, voz):
+        self.memoria = memoria
+        self.voz = voz
+        if "habitos" not in self.memoria:
+            self.memoria["habitos"] = {}
+        if "sugerencias_dadas" not in self.memoria:
+            self.memoria["sugerencias_dadas"] = {}
+
+    def registrar(self, accion, valor):
+        hora = datetime.now().strftime("%H")
+        clave = f"{hora}:{accion}:{valor}"
+        habitos = self.memoria["habitos"]
+        habitos[clave] = habitos.get(clave, 0) + 1
+        # Si se repite 3+ veces, sugerir
+        if habitos[clave] == 3:
+            return self._sugerir(accion, valor, hora)
+        return None
+
+    def _sugerir(self, accion, valor, hora):
+        ya_sugerido = self.memoria["sugerencias_dadas"].get(f"{hora}:{accion}:{valor}", 0)
+        if ya_sugerido > 0:
+            return None
+        self.memoria["sugerencias_dadas"][f"{hora}:{accion}:{valor}"] = 1
+        if accion == "abrir_programa":
+            return f"Noto que siempre abres {valor} a esta hora. ¿Quieres que lo abra automáticamente?"
+        return None
+
+
 SYSTEM_PROMPT_BASE = """Eres Luna, una asistente de voz personal que controla un PC con Windows.
 Respondes siempre en español, con naturalidad y brevedad.
 
@@ -620,9 +881,15 @@ Puedes hacer:
 8. Ejecutar planes multi-paso para tareas complejas
 9. Controlar el ratón y teclado del PC
 10. Tomar capturas de pantalla y describir lo que hay en pantalla
+11. Poner recordatorios por voz ("avísame en 30 minutos que tengo reunión")
+12. Ver estado del sistema (CPU, RAM, disco, tiempo en sesión)
+13. Gestionar ventanas: maximizar, minimizar, cerrar, enfocar por nombre
+14. Buscar archivos en el PC por nombre
+15. Enviar mensajes de WhatsApp por voz
+16. Listar ventanas abiertas
 
 RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
-{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"guardar_programa"|"mouse_click"|"escribir_texto"|"hotkey"|"screenshot"|"plan"|"responder",
+{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"guardar_programa"|"mouse_click"|"escribir_texto"|"hotkey"|"screenshot"|"plan"|"recordatorio"|"estado_sistema"|"ventana"|"buscar_archivo"|"whatsapp"|"responder",
  "programa":"nombre o null",
  "query":"búsqueda o null",
  "url":"url o null",
@@ -638,7 +905,32 @@ RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
  "texto_escribir":"texto a escribir o null",
  "teclas":"combinación de teclas ej. ctrl+c o null",
  "pasos":["lista","de","pasos"] o null,
+ "recordatorio_msg":"texto del recordatorio o null",
+ "recordatorio_seg":segundos o null,
+ "ventana_accion":"enfocar"|"maximizar"|"minimizar"|"cerrar"|"listar" o null,
+ "ventana_nombre":"nombre parcial de la ventana o null",
+ "archivo_buscar":"nombre del archivo o null",
+ "wa_contacto":"nombre del contacto de whatsapp o null",
+ "wa_mensaje":"mensaje a enviar o null",
  "mensaje":"respuesta en español, máximo 2 oraciones"}
+
+RECORDATORIOS:
+"avísame en 30 minutos" -> {"accion":"recordatorio","recordatorio_msg":"Recordatorio","recordatorio_seg":1800,"mensaje":"Listo, te aviso en 30 minutos."}
+"recuérdame tomar agua en 1 hora" -> {"accion":"recordatorio","recordatorio_msg":"tomar agua","recordatorio_seg":3600,"mensaje":"Anotado, te aviso en una hora."}
+
+VENTANAS:
+"maximiza el discord" -> {"accion":"ventana","ventana_accion":"maximizar","ventana_nombre":"discord","mensaje":"Maximizando Discord."}
+"cierra el spotify" -> {"accion":"ventana","ventana_accion":"cerrar","ventana_nombre":"spotify","mensaje":"Cerrando Spotify."}
+"qué ventanas tengo abiertas" -> {"accion":"ventana","ventana_accion":"listar","ventana_nombre":null,"mensaje":"Revisando ventanas abiertas."}
+
+ARCHIVOS:
+"busca el archivo contrato" -> {"accion":"buscar_archivo","archivo_buscar":"contrato","mensaje":"Buscando en tus carpetas."}
+
+WHATSAPP:
+"manda un whatsapp a mamá que llego tarde" -> {"accion":"whatsapp","wa_contacto":"mamá","wa_mensaje":"Llego tarde","mensaje":"Enviando mensaje a mamá por WhatsApp."}
+
+ESTADO SISTEMA:
+"cómo está el sistema" -> {"accion":"estado_sistema","mensaje":"Revisando el estado del sistema."}
 
 PLANES — cuando una tarea requiere múltiples acciones encadenadas, usa accion "plan":
 Ejemplo: "busca vuelos a Brasil y dime el más barato"
@@ -796,21 +1088,36 @@ def main():
     print(f"🧠 Memoria cargada: {memoria}")
 
     print("🔧 Iniciando...\n")
-    voz      = Voz(keys["ELEVENLABS_API_KEY"])
-    mic      = Microfono()
-    pc       = ControlPC()
-    mouse    = ControlMouse()
+    voz        = Voz(keys["ELEVENLABS_API_KEY"])
+    mic        = Microfono()
+    pc         = ControlPC()
+    mouse      = ControlMouse()
+    ventanas   = GestorVentanas()
+    archivos   = BuscadorArchivos()
+    habitos    = AprendizajeHabitos(memoria, voz)
+    recordatorios = GestorRecordatorios(voz)
+    monitor    = MonitorSistema(voz)
     pc.programas_extra = memoria.get("programas", {})
-    cerebro  = Cerebro(keys["ANTHROPIC_API_KEY"], memoria)
+    cerebro    = Cerebro(keys["ANTHROPIC_API_KEY"], memoria)
 
     print("🌐 Iniciando navegador en segundo plano...")
-    navegador = Navegador()
+    navegador  = Navegador()
+    whatsapp   = WhatsAppWeb(navegador)
 
     nombre = memoria.get("nombre") or "usuario"
     print(f"\n✅ Listo! Di 'JADE' para activarme | Ctrl+C para salir\n")
     print("-"*52)
 
-    saludo = f"Hola {nombre}! Aquí estoy." if memoria.get("nombre") else "Hola! Soy Luna, tu asistente personal. Llámame cuando me necesites."
+    hora = datetime.now().hour
+    if memoria.get("nombre"):
+        if 5 <= hora < 12:
+            saludo = f"Buenos días {nombre}! Lista para ayudarte."
+        elif 12 <= hora < 20:
+            saludo = f"Buenas tardes {nombre}! Aquí estoy."
+        else:
+            saludo = f"Buenas noches {nombre}! En qué te ayudo."
+    else:
+        saludo = "Hola! Soy Luna, tu asistente personal. Llámame cuando me necesites."
     voz.hablar(saludo)
 
     modo_activo    = False
@@ -864,24 +1171,37 @@ def main():
                 modo_activo = False
                 continue
 
-            resp          = cerebro.procesar(texto_procesar)
-            accion        = resp.get("accion")
-            programa      = resp.get("programa")
-            query         = resp.get("query")
-            url           = resp.get("url")
-            subaccion     = resp.get("subaccion")
-            cantidad      = resp.get("cantidad") or 10
-            prompt_claude = resp.get("prompt_claude")
-            mem_key       = resp.get("memoria_key")
-            mem_valor     = resp.get("memoria_valor")
-            prog_nombre   = resp.get("prog_nombre")
-            prog_ruta     = resp.get("prog_ruta")
-            mouse_x       = resp.get("mouse_x")
-            mouse_y       = resp.get("mouse_y")
-            texto_escribir = resp.get("texto_escribir")
-            teclas        = resp.get("teclas")
-            pasos         = resp.get("pasos")
-            mensaje       = resp.get("mensaje", "Hecho!")
+            resp             = cerebro.procesar(texto_procesar)
+            accion           = resp.get("accion")
+            programa         = resp.get("programa")
+            query            = resp.get("query")
+            url              = resp.get("url")
+            subaccion        = resp.get("subaccion")
+            cantidad         = resp.get("cantidad") or 10
+            prompt_claude    = resp.get("prompt_claude")
+            mem_key          = resp.get("memoria_key")
+            mem_valor        = resp.get("memoria_valor")
+            prog_nombre      = resp.get("prog_nombre")
+            prog_ruta        = resp.get("prog_ruta")
+            mouse_x          = resp.get("mouse_x")
+            mouse_y          = resp.get("mouse_y")
+            texto_escribir   = resp.get("texto_escribir")
+            teclas           = resp.get("teclas")
+            pasos            = resp.get("pasos")
+            rec_msg          = resp.get("recordatorio_msg")
+            rec_seg          = resp.get("recordatorio_seg")
+            vent_accion      = resp.get("ventana_accion")
+            vent_nombre      = resp.get("ventana_nombre") or ""
+            archivo_buscar   = resp.get("archivo_buscar")
+            wa_contacto      = resp.get("wa_contacto")
+            wa_mensaje_txt   = resp.get("wa_mensaje")
+            mensaje          = resp.get("mensaje", "Hecho!")
+
+            # Registrar hábito
+            if accion == "abrir_programa" and programa:
+                sugerencia = habitos.registrar("abrir_programa", programa)
+                if sugerencia:
+                    guardar_memoria(cerebro.memoria)
 
             if accion == "abrir_programa" and programa:
                 if not pc.abrir(programa):
@@ -989,7 +1309,42 @@ def main():
                 descripcion = mouse.screenshot_y_analizar(texto_procesar, cerebro)
                 mensaje = descripcion
 
-            # ── Feature 1: Multi-step plan ──
+            elif accion == "recordatorio" and rec_msg and rec_seg:
+                recordatorios.agregar(rec_msg, int(rec_seg))
+
+            elif accion == "estado_sistema":
+                mensaje = monitor.estado()
+
+            elif accion == "ventana" and vent_accion:
+                if vent_accion == "listar":
+                    mensaje = ventanas.listar()
+                elif vent_accion == "enfocar":
+                    mensaje = ventanas.enfocar(vent_nombre)
+                elif vent_accion == "maximizar":
+                    mensaje = ventanas.maximizar(vent_nombre)
+                elif vent_accion == "minimizar":
+                    mensaje = ventanas.minimizar(vent_nombre)
+                elif vent_accion == "cerrar":
+                    mensaje = ventanas.cerrar(vent_nombre)
+
+            elif accion == "buscar_archivo" and archivo_buscar:
+                voz.hablar(mensaje)
+                resultados = archivos.buscar(archivo_buscar)
+                if resultados:
+                    nombres = [os.path.basename(r) for r in resultados[:3]]
+                    mensaje = f"Encontré {len(resultados)} archivo(s): {', '.join(nombres)}. ¿Quieres que abra alguno?"
+                    cerebro.historial.append({"role": "assistant", "content": f"Archivos encontrados: {resultados}"})
+                else:
+                    mensaje = f"No encontré ningún archivo con '{archivo_buscar}' en tus carpetas."
+
+            elif accion == "whatsapp" and wa_contacto and wa_mensaje_txt:
+                voz.hablar(mensaje)
+                if whatsapp.enviar(wa_contacto, wa_mensaje_txt):
+                    mensaje = f"Mensaje enviado a {wa_contacto}."
+                else:
+                    mensaje = f"No pude enviar el mensaje. Asegúrate de tener WhatsApp Web abierto y sesión iniciada."
+
+            # ── Multi-step plan ──
             elif accion == "plan" and pasos:
                 voz.hablar(mensaje)
                 mensaje = cerebro.ejecutar_plan(pasos, texto_procesar, navegador, cerebro)
