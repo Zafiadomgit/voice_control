@@ -77,36 +77,40 @@ def memoria_a_texto(mem):
 # ─────────────────────────────────────────
 
 PROGRAMAS = {
-    "lol":               r"C:\Riot Games\League of Legends\LeagueClient.exe",
-    "league":            r"C:\Riot Games\League of Legends\LeagueClient.exe",
-    "league of legends": r"C:\Riot Games\League of Legends\LeagueClient.exe",
-    "valorant":          r"C:\Riot Games\VALORANT\live\VALORANT.exe",
-    "steam":             r"C:\Program Files (x86)\Steam\steam.exe",
-    "epic games":        r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe",
-    "epic":              r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe",
-    "opera":             OPERA_PATH,
-    "opera gx":          OPERA_PATH,
-    "browser":           OPERA_PATH,
-    "navegador":         OPERA_PATH,
-    "chrome":            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "firefox":           r"C:\Program Files\Mozilla Firefox\firefox.exe",
-    "edge":              r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    "vscode":            r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
-    "vs code":           r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
-    "visual studio":     r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
-    "discord":           r"%LOCALAPPDATA%\Discord\Update.exe --processStart Discord.exe",
-    "spotify":           r"%APPDATA%\Spotify\Spotify.exe",
-    "whatsapp":          r"%LOCALAPPDATA%\WhatsApp\WhatsApp.exe",
-    "notepad":           "notepad.exe",
-    "bloc de notas":     "notepad.exe",
-    "calculator":        "calc.exe",
-    "calculadora":       "calc.exe",
-    "explorer":          "explorer.exe",
-    "explorador":        "explorer.exe",
-    "task manager":      "taskmgr.exe",
-    "administrador de tareas": "taskmgr.exe",
-    "claude":            r"%LOCALAPPDATA%\Programs\claude\Claude.exe",
-    "claude code":       "cmd.exe",
+    "lol":               [r"C:\Riot Games\League of Legends\LeagueClient.exe", r"D:\Riot Games\League of Legends\LeagueClient.exe"],
+    "league":            [r"C:\Riot Games\League of Legends\LeagueClient.exe", r"D:\Riot Games\League of Legends\LeagueClient.exe"],
+    "league of legends": [r"C:\Riot Games\League of Legends\LeagueClient.exe", r"D:\Riot Games\League of Legends\LeagueClient.exe"],
+    "valorant":          [r"C:\Riot Games\VALORANT\live\VALORANT.exe", r"D:\Riot Games\VALORANT\live\VALORANT.exe"],
+    "steam":             [r"C:\Program Files (x86)\Steam\steam.exe", r"C:\Program Files\Steam\steam.exe"],
+    "epic games":        [r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe"],
+    "epic":              [r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe"],
+    "ankama":            [r"%LOCALAPPDATA%\Ankama\ankama_launcher\ankama_launcher.exe", r"C:\Program Files (x86)\Ankama\Ankama Launcher\Ankama Launcher.exe", r"%LOCALAPPDATA%\Ankama\Ankama Launcher\Ankama Launcher.exe"],
+    "ankama launcher":   [r"%LOCALAPPDATA%\Ankama\ankama_launcher\ankama_launcher.exe", r"C:\Program Files (x86)\Ankama\Ankama Launcher\Ankama Launcher.exe", r"%LOCALAPPDATA%\Ankama\Ankama Launcher\Ankama Launcher.exe"],
+    "dofus":             [r"%LOCALAPPDATA%\Ankama\ankama_launcher\ankama_launcher.exe"],
+    "wakfu":             [r"%LOCALAPPDATA%\Ankama\ankama_launcher\ankama_launcher.exe"],
+    "opera":             [OPERA_PATH],
+    "opera gx":          [OPERA_PATH],
+    "browser":           [OPERA_PATH],
+    "navegador":         [OPERA_PATH],
+    "chrome":            [r"C:\Program Files\Google\Chrome\Application\chrome.exe", r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"],
+    "firefox":           [r"C:\Program Files\Mozilla Firefox\firefox.exe"],
+    "edge":              [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"],
+    "vscode":            [r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"],
+    "vs code":           [r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"],
+    "visual studio":     [r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"],
+    "discord":           [r"%LOCALAPPDATA%\Discord\app-*\Discord.exe"],
+    "spotify":           [r"%APPDATA%\Spotify\Spotify.exe"],
+    "whatsapp":          [r"%LOCALAPPDATA%\WhatsApp\WhatsApp.exe"],
+    "notepad":           ["notepad.exe"],
+    "bloc de notas":     ["notepad.exe"],
+    "calculator":        ["calc.exe"],
+    "calculadora":       ["calc.exe"],
+    "explorer":          ["explorer.exe"],
+    "explorador":        ["explorer.exe"],
+    "task manager":      ["taskmgr.exe"],
+    "administrador de tareas": ["taskmgr.exe"],
+    "claude":            [r"%LOCALAPPDATA%\Programs\claude\Claude.exe"],
+    "claude code":       ["cmd.exe"],
 }
 
 # ─────────────────────────────────────────
@@ -374,24 +378,76 @@ class ControlPC:
         n = nombre.lower().strip()
         if "claude code" in n:
             return self._abrir_claude_code()
-        for k, v in PROGRAMAS.items():
+
+        # Buscar en lista de programas conocidos
+        for k, rutas in PROGRAMAS.items():
             if k in n or n in k:
-                ruta = os.path.expandvars(v)
-                try:
-                    import ctypes
-                    ctypes.windll.shell32.ShellExecuteW(None, "open", ruta, None, None, 1)
-                    return True
-                except:
-                    try:
-                        subprocess.Popen(ruta, shell=True)
-                        return True
-                    except:
-                        pass
+                for ruta_template in rutas:
+                    # Soporte para wildcards (ej. Discord app-*)
+                    ruta = os.path.expandvars(ruta_template)
+                    if "*" in ruta:
+                        import glob
+                        matches = glob.glob(ruta)
+                        if matches:
+                            ruta = matches[-1]  # versión más reciente
+                        else:
+                            continue
+                    if os.path.exists(ruta) or not os.path.isabs(ruta):
+                        if self._ejecutar(ruta):
+                            return True
+
+        # Buscar en el registro de Windows (programas instalados)
+        ruta_reg = self._buscar_en_registro(n)
+        if ruta_reg and self._ejecutar(ruta_reg):
+            return True
+
+        # Último recurso: intentar abrir por nombre directamente
         try:
-            subprocess.Popen(n, shell=True)
+            subprocess.Popen(["cmd", "/c", "start", "", n], shell=False)
             return True
         except:
             return False
+
+    def _ejecutar(self, ruta):
+        try:
+            import ctypes
+            ctypes.windll.shell32.ShellExecuteW(None, "open", ruta, None, None, 1)
+            return True
+        except:
+            try:
+                subprocess.Popen(ruta, shell=True)
+                return True
+            except:
+                return False
+
+    def _buscar_en_registro(self, nombre):
+        try:
+            import winreg
+            claves = [
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            ]
+            for clave_base in claves:
+                try:
+                    reg = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, clave_base)
+                    for i in range(winreg.QueryInfoKey(reg)[0]):
+                        try:
+                            sub = winreg.OpenKey(reg, winreg.EnumKey(reg, i))
+                            display = winreg.QueryValueEx(sub, "DisplayName")[0].lower()
+                            if nombre in display or display in nombre:
+                                loc = winreg.QueryValueEx(sub, "InstallLocation")[0]
+                                if loc:
+                                    # buscar .exe en esa carpeta
+                                    for f in os.listdir(loc):
+                                        if f.lower().endswith(".exe") and nombre.split()[0] in f.lower():
+                                            return os.path.join(loc, f)
+                        except:
+                            continue
+                except:
+                    continue
+        except:
+            pass
+        return None
 
     def _abrir_claude_code(self, prompt=None):
         try:
