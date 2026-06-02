@@ -15,7 +15,7 @@ JADE - VOICE ASSISTANT
   ELEVENLABS_API_KEY=...
 """
 
-import os, sys, json, subprocess, tempfile, time
+import os, sys, json, subprocess, tempfile, time, threading
 import numpy as np
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
@@ -115,10 +115,17 @@ PROGRAMAS = {
 
 class Voz:
     def __init__(self, api_key):
-        self.api_key = api_key
+        self.api_key    = api_key
+        self._hablando  = False
+        self._stop_flag = threading.Event()
+
+    def interrumpir(self):
+        self._stop_flag.set()
 
     def hablar(self, texto):
         print(f"\n🔊 Jade: {texto}\n")
+        self._stop_flag.clear()
+        self._hablando = True
         tmp = None
         try:
             import urllib.request
@@ -144,7 +151,10 @@ class Voz:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 tmp = f.name
                 f.write(audio)
-            playsound(tmp)
+            if not self._stop_flag.is_set():
+                t = threading.Thread(target=playsound, args=(tmp,), daemon=True)
+                t.start()
+                t.join(timeout=30)
         except Exception as e:
             print(f"[ERROR VOICE] {e}")
             try:
@@ -156,9 +166,10 @@ class Voz:
             except:
                 pass
         finally:
+            self._hablando = False
             if tmp:
                 try:
-                    time.sleep(0.2)
+                    time.sleep(0.3)
                     os.unlink(tmp)
                 except:
                     pass
@@ -511,8 +522,11 @@ def main():
     ultimo_texto   = 0
     WAKE_WORDS     = ["jade", "jad", "yade"]
 
+    hilo_voz = None
+
     while True:
         try:
+            # Escuchar en hilo separado mientras Jade habla (para poder interrumpir)
             texto = mic.escuchar(modo_standby=not modo_activo)
 
             if not texto:
@@ -522,6 +536,12 @@ def main():
                 continue
 
             ultimo_texto = time.time()
+
+            # Interrumpir a Jade si está hablando
+            if voz._hablando:
+                voz.interrumpir()
+                time.sleep(0.3)
+
             print(f"👤 [{'ON' if modo_activo else 'standby'}] {texto}")
 
             # ── Standby: cualquier frase con "jade" activa ──
@@ -626,7 +646,9 @@ def main():
                         cerebro.memoria["notas"].append(mem_valor)
                 guardar_memoria(cerebro.memoria)
 
-            voz.hablar(mensaje)
+            hilo_voz = threading.Thread(target=voz.hablar, args=(mensaje,), daemon=True)
+            hilo_voz.start()
+            hilo_voz.join()  # esperar a que termine antes del próximo ciclo
 
             turnos_activos += 1
             if turnos_activos >= 8:
