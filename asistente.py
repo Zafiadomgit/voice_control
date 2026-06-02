@@ -310,19 +310,45 @@ class Navegador:
             import urllib.request, urllib.parse, re
             q = urllib.parse.quote(query)
             self._last_search_url = f"https://duckduckgo.com/?q={q}"
+
             req = urllib.request.Request(
                 f"https://html.duckduckgo.com/html/?q={q}",
                 headers={"User-Agent": "Mozilla/5.0"}
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
+
+            # extraer títulos y URLs del primer resultado
             titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]*>(.*?)</a>', html, re.DOTALL)
             titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles if t.strip()]
             titles = [t for t in titles if len(t) > 5][:3]
+
+            # navegar el browser headless al primer resultado para poder leer detalles
+            urls = re.findall(r'class="result__url"[^>]*>(.*?)<', html)
+            if urls:
+                primer_url = urls[0].strip()
+                if not primer_url.startswith("http"):
+                    primer_url = "https://" + primer_url
+                try:
+                    self.page.goto(primer_url, wait_until="domcontentloaded", timeout=10000)
+                    self._last_search_url = primer_url
+                except:
+                    pass
+
             return titles
         except Exception as e:
             print(f"[ERROR SEARCH] {e}")
             return []
+
+    def leer_pagina(self):
+        try:
+            return self.page.evaluate("""() => {
+                const clone = document.body.cloneNode(true);
+                clone.querySelectorAll('script,style,nav,footer,header,aside').forEach(e=>e.remove());
+                return clone.innerText.substring(0,3000);
+            }""")
+        except:
+            return ""
 
     def navegar(self, url):
         try:
@@ -457,7 +483,7 @@ Puedes hacer:
 7. Conversación natural
 
 RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
-{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"responder",
+{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"responder",
  "programa":"nombre o null",
  "query":"búsqueda o null",
  "url":"url o null",
@@ -483,6 +509,19 @@ class Cerebro:
         mem_texto = memoria_a_texto(self.memoria)
         bloque = f"\nINFORMACIÓN DEL USUARIO:\n{mem_texto}" if mem_texto else ""
         return SYSTEM_PROMPT_BASE.replace("{memoria}", bloque)
+
+    def resumir_pagina(self, contenido, pregunta):
+        try:
+            r = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=200,
+                system="Eres Jade, asistente de voz. Responde en español, máximo 3 oraciones, solo con la información relevante a la pregunta del usuario. Sin markdown.",
+                messages=[{"role": "user", "content": f"Pregunta: {pregunta}\n\nContenido de la página:\n{contenido[:2000]}"}]
+            )
+            return r.content[0].text.strip()
+        except Exception as e:
+            print(f"[ERROR RESUMEN] {e}")
+            return "No pude procesar el contenido de la página."
 
     def procesar(self, texto):
         self.historial.append({"role": "user", "content": texto})
@@ -542,7 +581,7 @@ def main():
     modo_activo    = False
     turnos_activos = 0
     ultimo_texto   = 0
-    WAKE_WORDS     = ["jade", "jad", "yade"]
+    WAKE_WORDS     = ["jade", "jad", "yade", "holly", "harvey", "harvy", "jolly", "hola jade", "hey jade"]
 
     hilo_voz = None
 
@@ -626,6 +665,14 @@ def main():
                     mensaje = f"Estoy en {title}. Di muéstrame si quieres verlo."
                 except Exception as e:
                     mensaje = "Tuve un problema navegando a ese sitio."
+
+            elif accion == "leer_pagina":
+                contenido = navegador.leer_pagina()
+                if contenido:
+                    resumen = cerebro.resumir_pagina(contenido, texto_procesar)
+                    mensaje = resumen
+                else:
+                    mensaje = "No pude leer el contenido de la página actual."
 
             elif accion == "mostrar_navegador":
                 try:
