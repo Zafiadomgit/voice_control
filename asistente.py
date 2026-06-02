@@ -207,9 +207,26 @@ class Microfono:
 
     def _transcribir_whisper(self, path):
         try:
-            segments, _ = self.model.transcribe(path, language=None, beam_size=5)
-            resultado = " ".join(s.text for s in segments).strip().lower()
-            return resultado if resultado else None
+            segments, info = self.model.transcribe(
+                path,
+                language="es",
+                beam_size=5,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.6,
+                log_prob_threshold=-1.0,
+                compression_ratio_threshold=2.4,
+                initial_prompt="Jade asistente de voz. Comandos en español.",
+            )
+            partes = [s.text.strip() for s in segments]
+            # quitar repeticiones consecutivas
+            sin_repeticiones = []
+            for p in partes:
+                if not sin_repeticiones or p.lower() != sin_repeticiones[-1].lower():
+                    sin_repeticiones.append(p)
+            resultado = " ".join(sin_repeticiones).strip().lower()
+            if not resultado or len(resultado) < 2:
+                return None
+            return resultado
         except Exception as e:
             print(f"[WHISPER ERROR] {e}")
             return None
