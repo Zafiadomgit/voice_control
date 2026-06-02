@@ -1,0 +1,8 @@
+anthropic
+sounddevice
+scipy
+numpy
+SpeechRecognition
+playsound3
+playwright
+pyttsx3
