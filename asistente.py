@@ -236,7 +236,9 @@ class Microfono:
                 audio = self.recognizer.record(src)
             os.unlink(path)
             return self.recognizer.recognize_google(audio, language="es-ES").lower().strip()
-        except Exception:
+        except Exception as e:
+            if "UnknownValue" not in type(e).__name__:
+                print(f"[STT ERROR] {type(e).__name__}: {e}")
             return None
 
 # ─────────────────────────────────────────
