@@ -1,5 +1,6 @@
 anthropic
 sounddevice
+soundfile
 scipy
 numpy
 playsound3
@@ -9,3 +10,4 @@ faster-whisper
 pycaw
 comtypes
 wmi
+pywin32

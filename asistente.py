@@ -115,20 +115,22 @@ PROGRAMAS = {
 
 class Voz:
     def __init__(self, api_key):
-        self.api_key    = api_key
-        self._hablando  = False
-        self._stop_flag = threading.Event()
+        self.api_key   = api_key
+        self._hablando = False
 
     def interrumpir(self):
-        self._stop_flag.set()
+        try:
+            sd.stop()
+        except:
+            pass
+        self._hablando = False
 
     def hablar(self, texto):
         print(f"\n🔊 Jade: {texto}\n")
-        self._stop_flag.clear()
         self._hablando = True
         tmp = None
         try:
-            import urllib.request
+            import urllib.request, soundfile as sf
             payload = json.dumps({
                 "text": texto,
                 "model_id": ELEVENLABS_MODEL,
@@ -147,14 +149,13 @@ class Voz:
             req.add_header("Content-Type", "application/json")
             req.add_header("Accept", "audio/mpeg")
             with urllib.request.urlopen(req) as resp:
-                audio = resp.read()
+                audio_bytes = resp.read()
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 tmp = f.name
-                f.write(audio)
-            if not self._stop_flag.is_set():
-                t = threading.Thread(target=playsound, args=(tmp,), daemon=True)
-                t.start()
-                t.join(timeout=30)
+                f.write(audio_bytes)
+            data, samplerate = sf.read(tmp, dtype='float32')
+            sd.play(data, samplerate)
+            sd.wait()  # espera hasta que termina O hasta que se llame sd.stop()
         except Exception as e:
             print(f"[ERROR VOICE] {e}")
             try:
@@ -167,6 +168,12 @@ class Voz:
                 pass
         finally:
             self._hablando = False
+            if tmp:
+                try:
+                    time.sleep(0.1)
+                    os.unlink(tmp)
+                except:
+                    pass
             if tmp:
                 try:
                     time.sleep(0.3)
@@ -652,9 +659,10 @@ def main():
                         cerebro.memoria["notas"].append(mem_valor)
                 guardar_memoria(cerebro.memoria)
 
+            # Hablar en hilo separado para que el mic escuche en paralelo
             hilo_voz = threading.Thread(target=voz.hablar, args=(mensaje,), daemon=True)
             hilo_voz.start()
-            hilo_voz.join()  # esperar a que termine antes del próximo ciclo
+            # No hacemos join — el loop continúa escuchando mientras Jade habla
 
             turnos_activos += 1
             if turnos_activos >= 8:
