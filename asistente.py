@@ -25,7 +25,7 @@ from playsound3 import playsound
 from datetime import datetime, timedelta
 
 WAKE_WORD        = "luna"
-ELEVENLABS_VOICE = "5uTff6FcSD9Q6gtj64iR"
+ELEVENLABS_VOICE = "qWWAqFomnJ99VwQLREfT"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
 MEMORIA_PATH     = Path(__file__).parent / "memoria.json"
