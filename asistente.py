@@ -218,7 +218,7 @@ class Microfono:
             if modo_standby:
                 data = self.grabar(max_segundos=4, silencio_segundos=0.6, timeout_sin_voz=1.5)
             else:
-                data = self.grabar(max_segundos=10, silencio_segundos=1.2, timeout_sin_voz=2.5)
+                data = self.grabar(max_segundos=12, silencio_segundos=2.0, timeout_sin_voz=3.0)
 
             if len(data) < 1500:
                 return None
