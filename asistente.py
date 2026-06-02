@@ -26,7 +26,7 @@ from pathlib import Path
 from playsound3 import playsound
 
 WAKE_WORD        = "jade"
-ELEVENLABS_VOICE = "nTkjq09AuYgsNR8E4sDe"
+ELEVENLABS_VOICE = "FGY2WhTYpPnrIDTdsKH5"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
 
