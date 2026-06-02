@@ -57,7 +57,7 @@ def cargar_memoria():
             return json.loads(MEMORIA_PATH.read_text(encoding="utf-8"))
         except:
             pass
-    return {"nombre": None, "preferencias": [], "notas": []}
+    return {"nombre": None, "preferencias": [], "notas": [], "programas": {}}
 
 def guardar_memoria(mem):
     MEMORIA_PATH.write_text(json.dumps(mem, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -379,6 +379,13 @@ class ControlPC:
         if "claude code" in n:
             return self._abrir_claude_code()
 
+        # Primero buscar en programas guardados por el usuario
+        programas_guardados = getattr(self, 'programas_extra', {})
+        for k, ruta in programas_guardados.items():
+            if k in n or n in k:
+                if self._ejecutar(ruta):
+                    return True
+
         # Buscar en lista de programas conocidos
         for k, rutas in PROGRAMAS.items():
             if k in n or n in k:
@@ -401,24 +408,23 @@ class ControlPC:
         if ruta_reg and self._ejecutar(ruta_reg):
             return True
 
-        # Último recurso: intentar abrir por nombre directamente
+        # Último recurso: buscar en PATH del sistema (silenciosamente)
         try:
-            subprocess.Popen(["cmd", "/c", "start", "", n], shell=False)
-            return True
+            resultado = subprocess.run(["where", n.split()[0]], capture_output=True, text=True)
+            if resultado.returncode == 0:
+                exe = resultado.stdout.strip().split("\n")[0]
+                subprocess.Popen(exe, shell=True)
+                return True
         except:
-            return False
+            pass
+        return False
 
     def _ejecutar(self, ruta):
         try:
-            import ctypes
-            ctypes.windll.shell32.ShellExecuteW(None, "open", ruta, None, None, 1)
+            subprocess.Popen(ruta, shell=True)
             return True
         except:
-            try:
-                subprocess.Popen(ruta, shell=True)
-                return True
-            except:
-                return False
+            return False
 
     def _buscar_en_registro(self, nombre):
         try:
@@ -535,7 +541,7 @@ Puedes hacer:
 7. Conversación natural
 
 RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
-{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"responder",
+{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"leer_pagina"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"guardar_memoria"|"guardar_programa"|"responder",
  "programa":"nombre o null",
  "query":"búsqueda o null",
  "url":"url o null",
@@ -544,6 +550,8 @@ RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
  "prompt_claude":"tarea para claude code o null",
  "memoria_key":"nombre"|"preferencia"|"nota" o null,
  "memoria_valor":"valor a guardar o null",
+ "prog_nombre":"nombre del programa a guardar o null",
+ "prog_ruta":"ruta del ejecutable o null",
  "mensaje":"respuesta en español, máximo 2 oraciones"}
 
 GUARDAR MEMORIA — cuando el usuario diga su nombre, una preferencia o algo que quiera que recuerdes:
@@ -618,6 +626,7 @@ def main():
     voz      = Voz(keys["ELEVENLABS_API_KEY"])
     mic      = Microfono()
     pc       = ControlPC()
+    pc.programas_extra = memoria.get("programas", {})
     cerebro  = Cerebro(keys["ANTHROPIC_API_KEY"], memoria)
 
     print("🌐 Iniciando navegador en segundo plano...")
@@ -691,6 +700,8 @@ def main():
             prompt_claude = resp.get("prompt_claude")
             mem_key       = resp.get("memoria_key")
             mem_valor     = resp.get("memoria_valor")
+            prog_nombre   = resp.get("prog_nombre")
+            prog_ruta     = resp.get("prog_ruta")
             mensaje       = resp.get("mensaje", "Hecho!")
 
             if accion == "abrir_programa" and programa:
@@ -755,6 +766,11 @@ def main():
                     pc.claude_code_con_prompt(prompt_claude)
                 else:
                     pc.abrir("claude code")
+
+            elif accion == "guardar_programa" and prog_nombre and prog_ruta:
+                cerebro.memoria.setdefault("programas", {})[prog_nombre.lower()] = prog_ruta
+                pc.programas_extra = cerebro.memoria["programas"]
+                guardar_memoria(cerebro.memoria)
 
             elif accion == "guardar_memoria" and mem_key and mem_valor:
                 if mem_key == "nombre":
