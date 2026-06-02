@@ -225,13 +225,12 @@ class Microfono:
 
     def escuchar(self, modo_standby=False):
         try:
-            # En standby: frases cortas, corta rápido
             if modo_standby:
-                data = self.grabar(max_segundos=4, silencio_segundos=0.6, timeout_sin_voz=1.5)
+                data = self.grabar(max_segundos=6, silencio_segundos=1.0, timeout_sin_voz=2.5)
             else:
                 data = self.grabar(max_segundos=12, silencio_segundos=2.0, timeout_sin_voz=3.0)
 
-            if len(data) < 1500:
+            if len(data) < 800:
                 return None
 
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
@@ -242,10 +241,20 @@ class Microfono:
             with sr.AudioFile(path) as src:
                 audio = self.recognizer.record(src)
             os.unlink(path)
-            return self.recognizer.recognize_google(audio, language="es-ES").lower().strip()
+
+            for lang in ["es-ES", "es-419", "en-US"]:
+                try:
+                    resultado = self.recognizer.recognize_google(audio, language=lang).lower().strip()
+                    if resultado:
+                        return resultado
+                except sr.UnknownValueError:
+                    continue
+                except Exception as e:
+                    print(f"[STT ERROR {lang}] {e}")
+                    continue
+            return None
         except Exception as e:
-            if "UnknownValue" not in type(e).__name__:
-                print(f"[STT ERROR] {type(e).__name__}: {e}")
+            print(f"[STT ERROR] {e}")
             return None
 
 # ─────────────────────────────────────────
@@ -543,7 +552,7 @@ def main():
             texto = mic.escuchar(modo_standby=not modo_activo)
 
             if not texto:
-                if modo_activo and (time.time() - ultimo_texto > 15):
+                if modo_activo and (time.time() - ultimo_texto > 45):
                     print("[timeout] Volviendo a standby")
                     modo_activo = False
                 continue
