@@ -149,20 +149,13 @@ class Microfono:
         self._init_whisper()
 
     def _init_whisper(self):
-        try:
-            from faster_whisper import WhisperModel
-            # tiny model: fastest on CPU, good enough for voice commands
-            self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
-            self.usar_whisper = True
-            print("🎙️  Whisper local STT ready (tiny model)")
-        except ImportError:
-            import speech_recognition as sr
-            self.recognizer = sr.Recognizer()
-            self.recognizer.energy_threshold = 200
-            self.recognizer.dynamic_energy_threshold = True
-            self.recognizer.pause_threshold = 0.5
-            self.usar_whisper = False
-            print("🎙️  Using Google STT (install faster-whisper for local STT)")
+        import speech_recognition as sr
+        self.recognizer = sr.Recognizer()
+        self.recognizer.energy_threshold = 300
+        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.pause_threshold = 0.5
+        self.usar_whisper = False
+        print("🎙️  Google STT listo (español)")
 
     def grabar(self):
         chunk = int(self.sample_rate * 0.03)   # 30ms chunks
@@ -244,6 +237,9 @@ class Microfono:
                 audio = self.recognizer.record(src)
             return self.recognizer.recognize_google(audio, language="es-ES").lower().strip()
         except sr.UnknownValueError:
+            return None
+        except sr.RequestError as e:
+            print(f"[GOOGLE STT sin conexión] {e}")
             return None
         except Exception as e:
             print(f"[GOOGLE STT ERROR] {e}")
