@@ -153,7 +153,7 @@ class Microfono:
         self.recognizer = sr.Recognizer()
         self.recognizer.energy_threshold = 300
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.5
+        self.recognizer.pause_threshold = 1.2  # espera más antes de cortar
         self.usar_whisper = False
         print("🎙️  Google STT listo (español)")
 
@@ -260,7 +260,7 @@ class Navegador:
 
     def mostrar(self):
         try:
-            url = self.page.evaluate("window.location.href")
+            url = getattr(self, "_last_search_url", None) or self.page.evaluate("window.location.href")
             if os.path.exists(OPERA_PATH):
                 subprocess.Popen([OPERA_PATH, url])
             else:
@@ -271,15 +271,23 @@ class Navegador:
             return None
 
     def buscar_google(self, query):
+        # DuckDuckGo HTML search — no bot blocking
         try:
-            url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            self.page.wait_for_timeout(2000)
-            results = self.page.evaluate("""() => {
-                const items = document.querySelectorAll('h3');
-                return Array.from(items).slice(0,3).map(h=>h.innerText).filter(t=>t.length>0);
-            }""")
-            return results
+            import urllib.request, urllib.parse, re
+            q = urllib.parse.quote(query)
+            req = urllib.request.Request(
+                f"https://html.duckduckgo.com/html/?q={q}",
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+            # extract result titles
+            titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]*>(.*?)</a>', html, re.DOTALL)
+            titles = [re.sub(r'<[^>]+>', '', t).strip() for t in titles if t.strip()]
+            titles = [t for t in titles if len(t) > 5][:3]
+            # also store last search URL for "show me"
+            self._last_search_url = f"https://duckduckgo.com/?q={q}"
+            return titles
         except Exception as e:
             print(f"[ERROR SEARCH] {e}")
             return []
