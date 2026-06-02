@@ -2,7 +2,10 @@ anthropic
 sounddevice
 scipy
 numpy
-SpeechRecognition
 playsound3
 playwright
 pyttsx3
+faster-whisper
+pycaw
+comtypes
+wmi

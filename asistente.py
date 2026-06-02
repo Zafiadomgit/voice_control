@@ -4,9 +4,13 @@ JADE - VOICE ASSISTANT
 - ElevenLabs voice (Jessica)
 - Wake word: "Jade"
 - Background browser (Playwright)
-- "show me" -> opens Opera GX
+- "show me" / "muéstrame" -> opens Opera GX
 - Program control
-- Python 3.14+ Windows
+- PC control (shutdown, restart, volume, brightness)
+- Claude Code integration via voice
+- Whisper local STT (faster-whisper)
+- Spanish + English
+- Python 3.10+ Windows
 
 .env file:
   ANTHROPIC_API_KEY=sk-ant-...
@@ -17,7 +21,6 @@ import os, sys, json, subprocess, tempfile, time
 import numpy as np
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
-import speech_recognition as sr
 import anthropic
 from pathlib import Path
 from playsound3 import playsound
@@ -56,21 +59,30 @@ PROGRAMAS = {
     "valorant":          r"C:\Riot Games\VALORANT\live\VALORANT.exe",
     "steam":             r"C:\Program Files (x86)\Steam\steam.exe",
     "epic games":        r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe",
+    "epic":              r"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe",
     "opera":             OPERA_PATH,
     "opera gx":          OPERA_PATH,
     "browser":           OPERA_PATH,
+    "navegador":         OPERA_PATH,
     "chrome":            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     "firefox":           r"C:\Program Files\Mozilla Firefox\firefox.exe",
     "edge":              r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     "vscode":            r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
     "vs code":           r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+    "visual studio":     r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
     "discord":           r"%LOCALAPPDATA%\Discord\Update.exe --processStart Discord.exe",
     "spotify":           r"%APPDATA%\Spotify\Spotify.exe",
     "whatsapp":          r"%LOCALAPPDATA%\WhatsApp\WhatsApp.exe",
     "notepad":           "notepad.exe",
+    "bloc de notas":     "notepad.exe",
     "calculator":        "calc.exe",
+    "calculadora":       "calc.exe",
     "explorer":          "explorer.exe",
+    "explorador":        "explorer.exe",
     "task manager":      "taskmgr.exe",
+    "administrador de tareas": "taskmgr.exe",
+    "claude":            r"%LOCALAPPDATA%\Programs\claude\Claude.exe",
+    "claude code":       "cmd.exe",
 }
 
 # ─────────────────────────────────────────
@@ -128,16 +140,29 @@ class Voz:
                     pass
 
 # ─────────────────────────────────────────
-# MICROPHONE
+# MICROPHONE — Whisper local STT
 # ─────────────────────────────────────────
 
 class Microfono:
     def __init__(self):
-        self.recognizer = sr.Recognizer()
         self.sample_rate = 16000
-        self.recognizer.energy_threshold = 200
-        self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.5
+        self._init_whisper()
+
+    def _init_whisper(self):
+        try:
+            from faster_whisper import WhisperModel
+            # base model: good balance of speed/accuracy; change to "small" for more accuracy
+            self.model = WhisperModel("base", device="cpu", compute_type="int8")
+            self.usar_whisper = True
+            print("🎙️  Whisper local STT ready (base model)")
+        except ImportError:
+            import speech_recognition as sr
+            self.recognizer = sr.Recognizer()
+            self.recognizer.energy_threshold = 200
+            self.recognizer.dynamic_energy_threshold = True
+            self.recognizer.pause_threshold = 0.5
+            self.usar_whisper = False
+            print("🎙️  Using Google STT (install faster-whisper for local STT)")
 
     def grabar(self):
         chunk = int(self.sample_rate * 0.05)
@@ -163,17 +188,42 @@ class Microfono:
             data = self.grabar()
             if len(data) < 2000:
                 return None
+
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 path = f.name
+            import scipy.io.wavfile as wav_io
             wav_io.write(path, self.sample_rate, data)
+
+            if self.usar_whisper:
+                texto = self._transcribir_whisper(path)
+            else:
+                texto = self._transcribir_google(path)
+
+            os.unlink(path)
+            return texto
+        except Exception as e:
+            print(f"Mic error: {e}")
+            return None
+
+    def _transcribir_whisper(self, path):
+        try:
+            segments, _ = self.model.transcribe(path, language=None, beam_size=5)
+            resultado = " ".join(s.text for s in segments).strip().lower()
+            return resultado if resultado else None
+        except Exception as e:
+            print(f"[WHISPER ERROR] {e}")
+            return None
+
+    def _transcribir_google(self, path):
+        try:
+            import speech_recognition as sr
             with sr.AudioFile(path) as src:
                 audio = self.recognizer.record(src)
-            os.unlink(path)
-            return self.recognizer.recognize_google(audio, language="en-US").lower().strip()
+            return self.recognizer.recognize_google(audio, language="es-ES").lower().strip()
         except sr.UnknownValueError:
             return None
         except Exception as e:
-            print(f"Mic error: {e}")
+            print(f"[GOOGLE STT ERROR] {e}")
             return None
 
 # ─────────────────────────────────────────
@@ -190,7 +240,6 @@ class Navegador:
         print("🌐 Background browser ready")
 
     def mostrar(self):
-        """Open Opera GX with current URL"""
         try:
             url = self.page.evaluate("window.location.href")
             if os.path.exists(OPERA_PATH):
@@ -245,12 +294,17 @@ class Navegador:
             pass
 
 # ─────────────────────────────────────────
-# PC CONTROL
+# PC CONTROL — programs, shutdown, volume, brightness, Claude Code
 # ─────────────────────────────────────────
 
 class ControlPC:
     def abrir(self, nombre):
         n = nombre.lower().strip()
+
+        # Special: open Claude Code in a new terminal window
+        if "claude code" in n or "claude código" in n:
+            return self._abrir_claude_code()
+
         for k, v in PROGRAMAS.items():
             if k in n or n in k:
                 ruta = os.path.expandvars(v)
@@ -271,29 +325,134 @@ class ControlPC:
         except:
             return False
 
+    def _abrir_claude_code(self, prompt=None):
+        try:
+            cmd = "claude"
+            if prompt:
+                cmd = f'claude "{prompt}"'
+            subprocess.Popen(
+                f'start cmd /k {cmd}',
+                shell=True
+            )
+            return True
+        except Exception as e:
+            print(f"[ERROR CLAUDE CODE] {e}")
+            return False
+
+    def claude_code_con_prompt(self, prompt):
+        return self._abrir_claude_code(prompt=prompt)
+
+    def apagar(self, reiniciar=False):
+        try:
+            if reiniciar:
+                subprocess.Popen("shutdown /r /t 10", shell=True)
+            else:
+                subprocess.Popen("shutdown /s /t 10", shell=True)
+            return True
+        except Exception as e:
+            print(f"[ERROR SHUTDOWN] {e}")
+            return False
+
+    def cancelar_apagado(self):
+        try:
+            subprocess.Popen("shutdown /a", shell=True)
+            return True
+        except:
+            return False
+
+    def volumen(self, accion, cantidad=10):
+        """accion: 'subir' | 'bajar' | 'silenciar' | 'activar'"""
+        try:
+            from ctypes import cast, POINTER
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+
+            if accion == "silenciar":
+                volume.SetMute(1, None)
+            elif accion == "activar":
+                volume.SetMute(0, None)
+            elif accion in ("subir", "bajar"):
+                current = volume.GetMasterVolumeLevelScalar()
+                delta = cantidad / 100.0
+                new_vol = min(1.0, current + delta) if accion == "subir" else max(0.0, current - delta)
+                volume.SetMasterVolumeLevelScalar(new_vol, None)
+            return True
+        except Exception as e:
+            # Fallback: use nircmd if pycaw not available
+            try:
+                if accion == "subir":
+                    subprocess.Popen(f"nircmd changedefaultsounddevice volume +{cantidad*655}", shell=True)
+                elif accion == "bajar":
+                    subprocess.Popen(f"nircmd changedefaultsounddevice volume -{cantidad*655}", shell=True)
+                elif accion == "silenciar":
+                    subprocess.Popen("nircmd mutesysvolume 1", shell=True)
+                elif accion == "activar":
+                    subprocess.Popen("nircmd mutesysvolume 0", shell=True)
+                return True
+            except:
+                print(f"[ERROR VOLUME] {e}")
+                return False
+
+    def brillo(self, accion, cantidad=10):
+        """accion: 'subir' | 'bajar' | 'establecer'; cantidad: 0-100"""
+        try:
+            import wmi
+            c = wmi.WMI(namespace='wmi')
+            methods = c.WmiMonitorBrightnessMethods()[0]
+            brightness_obj = c.WmiMonitorBrightness()[0]
+            current = brightness_obj.CurrentBrightness
+
+            if accion == "subir":
+                new_val = min(100, current + cantidad)
+            elif accion == "bajar":
+                new_val = max(0, current - cantidad)
+            else:
+                new_val = max(0, min(100, cantidad))
+
+            methods.WmiSetBrightness(new_val, 0)
+            return True
+        except Exception as e:
+            print(f"[ERROR BRIGHTNESS] {e}")
+            return False
+
 # ─────────────────────────────────────────
 # BRAIN
 # ─────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are Jade, a personal voice assistant controlling a Windows PC.
-ALWAYS respond in English only. Never use Spanish or any other language.
+SYSTEM_PROMPT = """Eres Jade, una asistente de voz personal que controla un PC con Windows.
+Respondes en español. Si el usuario habla en inglés, igual respondes en español.
 
-You can:
-1. Open programs: LOL, Steam, Opera GX, Discord, Spotify, VSCode, etc.
-2. Search the web in the background and report results
-3. Navigate to specific websites
-4. Answer questions and have natural conversation
+Puedes hacer:
+1. Abrir programas: LOL, Steam, Opera GX, Discord, Spotify, VSCode, Chrome, WhatsApp, Claude, Claude Code, etc.
+2. Buscar en la web en segundo plano y reportar resultados
+3. Navegar a sitios web específicos
+4. Controlar el PC: apagar, reiniciar, subir/bajar volumen, subir/bajar brillo
+5. Abrir Claude Code con un prompt específico para programar
+6. Responder preguntas y mantener conversación natural
 
-RESPOND ONLY IN PURE JSON, NO MARKDOWN, NO EXPLANATION:
-{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"responder","programa":"name or null","query":"search query or null","url":"url or null","mensaje":"English only, max 2 sentences"}
+RESPONDE SOLO EN JSON PURO, SIN MARKDOWN, SIN EXPLICACIÓN:
+{"accion":"abrir_programa"|"buscar_web"|"navegar_url"|"mostrar_navegador"|"apagar_pc"|"reiniciar_pc"|"cancelar_apagado"|"volumen"|"brillo"|"claude_code"|"responder",
+ "programa":"nombre o null",
+ "query":"búsqueda o null",
+ "url":"url o null",
+ "subaccion":"subir"|"bajar"|"silenciar"|"activar"|"establecer" o null,
+ "cantidad":número o null,
+ "prompt_claude":"tarea para claude code o null",
+ "mensaje":"respuesta en español, máximo 2 oraciones"}
 
-EXAMPLES:
-"open lol" -> {"accion":"abrir_programa","programa":"lol","query":null,"url":null,"mensaje":"Sure, opening League of Legends!"}
-"open steam" -> {"accion":"abrir_programa","programa":"steam","query":null,"url":null,"mensaje":"Opening Steam right now!"}
-"search flights to Brazil" -> {"accion":"buscar_web","programa":null,"query":"cheap flights to Brazil 2025","url":null,"mensaje":"Searching for flights to Brazil in the background, give me a second."}
-"go to youtube" -> {"accion":"navegar_url","programa":null,"query":null,"url":"youtube.com","mensaje":"Navigating to YouTube now."}
-"show me" -> {"accion":"mostrar_navegador","programa":null,"query":null,"url":null,"mensaje":"Opening Opera GX so you can see!"}
-"how are you" -> {"accion":"responder","programa":null,"query":null,"url":null,"mensaje":"All good, ready to help!"}"""
+EJEMPLOS:
+"jade abre el lol" -> {"accion":"abrir_programa","programa":"lol","query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Claro, abriendo League of Legends!"}
+"jade busca vuelos a Brasil" -> {"accion":"buscar_web","programa":null,"query":"vuelos baratos a Brasil 2025","url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Buscando vuelos a Brasil, dame un segundo."}
+"jade apaga el pc" -> {"accion":"apagar_pc","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Apagando el PC en 10 segundos. Di cancela si te arrepentiste."}
+"jade reinicia" -> {"accion":"reiniciar_pc","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Reiniciando el PC en 10 segundos."}
+"jade sube el volumen" -> {"accion":"volumen","programa":null,"query":null,"url":null,"subaccion":"subir","cantidad":10,"prompt_claude":null,"mensaje":"Subiendo el volumen."}
+"jade silencia" -> {"accion":"volumen","programa":null,"query":null,"url":null,"subaccion":"silenciar","cantidad":null,"prompt_claude":null,"mensaje":"Silenciando el audio."}
+"jade baja el brillo" -> {"accion":"brillo","programa":null,"query":null,"url":null,"subaccion":"bajar","cantidad":10,"prompt_claude":null,"mensaje":"Bajando el brillo."}
+"jade abre claude code y crea un script de python" -> {"accion":"claude_code","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":"crea un script de python que...","mensaje":"Abriendo Claude Code con tu tarea."}
+"jade muéstrame" -> {"accion":"mostrar_navegador","programa":null,"query":null,"url":null,"subaccion":null,"cantidad":null,"prompt_claude":null,"mensaje":"Abriendo Opera GX para que veas!"}"""
 
 class Cerebro:
     def __init__(self, api_key):
@@ -307,7 +466,7 @@ class Cerebro:
         try:
             r = self.client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=200,
+                max_tokens=300,
                 system=SYSTEM_PROMPT,
                 messages=self.historial
             )
@@ -316,10 +475,10 @@ class Cerebro:
             self.historial.append({"role": "assistant", "content": raw})
             return json.loads(raw)
         except json.JSONDecodeError:
-            return {"accion":"responder","programa":None,"query":None,"url":None,"mensaje":"One moment, I had an issue."}
+            return {"accion":"responder","programa":None,"query":None,"url":None,"subaccion":None,"cantidad":None,"prompt_claude":None,"mensaje":"Un momento, tuve un problema procesando eso."}
         except Exception as e:
             print(f"[ERROR API] {e}")
-            return {"accion":"responder","programa":None,"query":None,"url":None,"mensaje":"Connection issue, try again."}
+            return {"accion":"responder","programa":None,"query":None,"url":None,"subaccion":None,"cantidad":None,"prompt_claude":None,"mensaje":"Problemas de conexión, intenta de nuevo."}
 
 # ─────────────────────────────────────────
 # MAIN
@@ -327,28 +486,28 @@ class Cerebro:
 
 def main():
     print("\n" + "="*52)
-    print("   🤖  Jade — Voice Assistant  |  Windows")
+    print("   🤖  Jade — Asistente de Voz  |  Windows")
     print("="*52 + "\n")
 
     keys = cargar_env()
     if "ANTHROPIC_API_KEY" not in keys:
-        print("❌ Missing ANTHROPIC_API_KEY in .env"); sys.exit(1)
+        print("❌ Falta ANTHROPIC_API_KEY en .env"); sys.exit(1)
     if "ELEVENLABS_API_KEY" not in keys:
-        print("❌ Missing ELEVENLABS_API_KEY in .env"); sys.exit(1)
+        print("❌ Falta ELEVENLABS_API_KEY en .env"); sys.exit(1)
 
-    print("🔧 Starting up...\n")
+    print("🔧 Iniciando...\n")
     voz      = Voz(keys["ELEVENLABS_API_KEY"])
     mic      = Microfono()
     pc       = ControlPC()
     cerebro  = Cerebro(keys["ANTHROPIC_API_KEY"])
 
-    print("🌐 Starting background browser...")
+    print("🌐 Iniciando navegador en segundo plano...")
     navegador = Navegador()
 
-    print(f"\n✅ Ready! Say '{WAKE_WORD.upper()}' to activate | Ctrl+C to quit\n")
+    print(f"\n✅ Listo! Di '{WAKE_WORD.upper()}' para activarme | Ctrl+C para salir\n")
     print("-"*52)
 
-    voz.hablar("Hey! I am Jade, your personal assistant. Call my name whenever you need me.")
+    voz.hablar("Hola! Soy Jade, tu asistente personal. Llámame cuando me necesites.")
 
     modo_activo    = False
     turnos_activos = 0
@@ -362,7 +521,7 @@ def main():
 
             print(f"👤 [{'ON' if modo_activo else 'standby'}] {texto}")
 
-            # ── Standby: wait for wake word ──
+            # ── Standby: esperar wake word ──
             if not modo_activo:
                 if WAKE_WORD in texto:
                     modo_activo    = True
@@ -371,29 +530,32 @@ def main():
                     if len(comando) > 3:
                         texto_procesar = comando
                     else:
-                        voz.hablar("Yeah?")
+                        voz.hablar("Dime!")
                         continue
                 else:
                     continue
             else:
                 texto_procesar = texto
 
-            # ── Deactivate ──
-            if any(p in texto for p in ["goodbye","bye jade","thanks jade","ok thanks","stop listening"]):
-                voz.hablar("Got it, call me when you need me!")
+            # ── Desactivar ──
+            if any(p in texto for p in ["adiós jade","bye jade","gracias jade","ok gracias","para de escuchar","goodbye jade"]):
+                voz.hablar("Listo, llámame cuando me necesites!")
                 modo_activo = False
                 continue
 
-            resp     = cerebro.procesar(texto_procesar)
-            accion   = resp.get("accion")
-            programa = resp.get("programa")
-            query    = resp.get("query")
-            url      = resp.get("url")
-            mensaje  = resp.get("mensaje", "Done!")
+            resp          = cerebro.procesar(texto_procesar)
+            accion        = resp.get("accion")
+            programa      = resp.get("programa")
+            query         = resp.get("query")
+            url           = resp.get("url")
+            subaccion     = resp.get("subaccion")
+            cantidad      = resp.get("cantidad") or 10
+            prompt_claude = resp.get("prompt_claude")
+            mensaje       = resp.get("mensaje", "Hecho!")
 
             if accion == "abrir_programa" and programa:
                 if not pc.abrir(programa):
-                    mensaje = f"I couldn't find {programa}. Make sure it's installed."
+                    mensaje = f"No encontré {programa}. Asegúrate de que esté instalado."
 
             elif accion == "buscar_web" and query:
                 voz.hablar(mensaje)
@@ -401,39 +563,68 @@ def main():
                     resultados = navegador.buscar_google(query)
                     if resultados:
                         resumen = ". ".join(resultados[:2])
-                        mensaje = f"Here's what I found: {resumen}. Say show me to open Opera GX."
+                        mensaje = f"Esto es lo que encontré: {resumen}. Di muéstrame para abrir Opera GX."
                     else:
-                        mensaje = "I searched but couldn't find clear results. Say show me to check the browser."
+                        mensaje = "Busqué pero no encontré resultados claros. Di muéstrame para ver el navegador."
                 except Exception as e:
                     print(f"[ERROR BROWSER] {e}")
-                    mensaje = "I had trouble with the browser, try again."
+                    mensaje = "Tuve un problema con el navegador, intenta de nuevo."
 
             elif accion == "navegar_url" and url:
                 voz.hablar(mensaje)
                 try:
                     title = navegador.navegar(url)
-                    mensaje = f"I'm on {title} now. Say show me if you want to see it."
+                    mensaje = f"Estoy en {title}. Di muéstrame si quieres verlo."
                 except Exception as e:
                     print(f"[ERROR NAV] {e}")
-                    mensaje = f"I had trouble navigating there."
+                    mensaje = "Tuve un problema navegando a ese sitio."
 
             elif accion == "mostrar_navegador":
                 try:
                     navegador.mostrar()
-                    mensaje = "Opening Opera GX now!"
+                    mensaje = "Abriendo Opera GX!"
                 except Exception as e:
                     print(f"[ERROR SHOW] {e}")
-                    mensaje = "I couldn't open the browser."
+                    mensaje = "No pude abrir el navegador."
+
+            elif accion == "apagar_pc":
+                if pc.apagar(reiniciar=False):
+                    mensaje = mensaje
+                else:
+                    mensaje = "No pude iniciar el apagado."
+
+            elif accion == "reiniciar_pc":
+                if pc.apagar(reiniciar=True):
+                    mensaje = mensaje
+                else:
+                    mensaje = "No pude reiniciar el PC."
+
+            elif accion == "cancelar_apagado":
+                pc.cancelar_apagado()
+
+            elif accion == "volumen" and subaccion:
+                if not pc.volumen(subaccion, int(cantidad)):
+                    mensaje = "No pude ajustar el volumen. Puede que necesites instalar pycaw."
+
+            elif accion == "brillo" and subaccion:
+                if not pc.brillo(subaccion, int(cantidad)):
+                    mensaje = "No pude ajustar el brillo. Solo funciona en laptops con pantalla integrada."
+
+            elif accion == "claude_code":
+                if prompt_claude:
+                    pc.claude_code_con_prompt(prompt_claude)
+                else:
+                    pc.abrir("claude code")
 
             voz.hablar(mensaje)
 
             turnos_activos += 1
-            if turnos_activos >= 4:
+            if turnos_activos >= 6:
                 modo_activo = False
 
         except KeyboardInterrupt:
-            print("\nShutting down Jade...")
-            voz.hablar("See you later!")
+            print("\nApagando Jade...")
+            voz.hablar("Hasta luego!")
             try:
                 navegador.cerrar()
             except:
