@@ -14,7 +14,7 @@ ALFRED - VOICE ASSISTANT
   ANTHROPIC_API_KEY=sk-ant-...
 """
 
-import os, sys, json, subprocess, tempfile, time, threading, base64, asyncio
+import os, sys, json, subprocess, tempfile, time, threading, base64
 import numpy as np
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
@@ -198,15 +198,10 @@ class Voz:
         self._hablando = False
 
     def _tts_a_archivo(self, texto, ruta):
-        import edge_tts
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(
-                edge_tts.Communicate(texto, EDGE_TTS_VOICE).save(ruta)
-            )
-        finally:
-            loop.close()
+        subprocess.run(
+            [sys.executable, "-m", "edge_tts", "--voice", EDGE_TTS_VOICE, "--text", texto, "--write-media", ruta],
+            check=True, capture_output=True
+        )
 
 # ─────────────────────────────────────────
 # MICROPHONE — Google STT, modo standby vs activo
