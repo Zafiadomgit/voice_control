@@ -198,10 +198,12 @@ class Voz:
         self._hablando = False
 
     def _tts_a_archivo(self, texto, ruta):
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "edge_tts", "--voice", EDGE_TTS_VOICE, "--text", texto, "--write-media", ruta],
-            check=True, capture_output=True
+            capture_output=True, text=True
         )
+        if result.returncode != 0:
+            raise RuntimeError(f"edge_tts error: {result.stderr.strip()}")
 
 # ─────────────────────────────────────────
 # MICROPHONE — Google STT, modo standby vs activo
