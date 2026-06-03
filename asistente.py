@@ -136,9 +136,10 @@ class Voz:
         try:
             import edge_tts, soundfile as sf
             tmp = tempfile.mktemp(suffix=".mp3")
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(self._generar_audio(texto, tmp))
-            loop.close()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(self._run_tts_sync, texto, tmp)
+                future.result()
             data, samplerate = sf.read(tmp, dtype='float32')
             sd.play(data, samplerate)
             sd.wait()
@@ -161,10 +162,15 @@ class Voz:
                 except:
                     pass
 
-    async def _generar_audio(self, texto, ruta):
+    def _run_tts_sync(self, texto, ruta):
         import edge_tts
-        communicator = edge_tts.Communicate(texto, EDGE_TTS_VOICE)
-        await communicator.save(ruta)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            communicator = edge_tts.Communicate(texto, EDGE_TTS_VOICE)
+            loop.run_until_complete(communicator.save(ruta))
+        finally:
+            loop.close()
 
 # ─────────────────────────────────────────
 # MICROPHONE — Google STT, modo standby vs activo
