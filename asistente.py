@@ -24,7 +24,7 @@ from playsound3 import playsound
 from datetime import datetime, timedelta
 
 WAKE_WORD      = "alfred"
-EDGE_TTS_VOICE = "es-ES-AlvaroNeural"
+EDGE_TTS_VOICE = "es-MX-JorgeNeural"
 OPERA_PATH     = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
 MEMORIA_PATH     = Path(__file__).parent / "memoria.json"
 
