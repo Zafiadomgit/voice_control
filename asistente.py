@@ -24,8 +24,8 @@ from pathlib import Path
 from playsound3 import playsound
 from datetime import datetime, timedelta
 
-WAKE_WORD        = "luna"
-ELEVENLABS_VOICE = "FGY2WhTYpPnrIDTdsKH5"
+WAKE_WORD        = "alfred"
+ELEVENLABS_VOICE = "pNInz6obpgDQGcFmaJgB"
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
 MEMORIA_PATH     = Path(__file__).parent / "memoria.json"
@@ -865,8 +865,8 @@ class AprendizajeHabitos:
         return None
 
 
-SYSTEM_PROMPT_BASE = """Eres Luna, una asistente de voz personal que controla un PC con Windows.
-Respondes siempre en español, con naturalidad y brevedad.
+SYSTEM_PROMPT_BASE = """Eres Alfred, un asistente de voz personal masculino que controla un PC con Windows.
+Respondes siempre en español, con naturalidad y brevedad. Hablas como un mayordomo inteligente y eficiente.
 
 {memoria}
 
@@ -964,7 +964,7 @@ class Cerebro:
             r = self.client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=200,
-                system="Eres Luna, asistente de voz. Responde en español, máximo 3 oraciones, solo con la información relevante a la pregunta del usuario. Sin markdown.",
+                system="Eres Alfred, asistente de voz masculino. Responde en español, máximo 3 oraciones, solo con la información relevante a la pregunta del usuario. Sin markdown.",
                 messages=[{"role": "user", "content": f"Pregunta: {pregunta}\n\nContenido de la página:\n{contenido[:2000]}"}]
             )
             return r.content[0].text.strip()
@@ -1060,7 +1060,7 @@ class Cerebro:
                     r = self.client.messages.create(
                         model="claude-sonnet-4-6",
                         max_tokens=200,
-                        system="Eres Luna, asistente de voz. Responde en español, máximo 2 oraciones, de forma natural y directa. Sin markdown.",
+                        system="Eres Alfred, asistente de voz masculino. Responde en español, máximo 2 oraciones, de forma natural y directa. Sin markdown.",
                         messages=[{"role": "user", "content": f"Basándote en esta información, da una respuesta útil al usuario:\n{resultado_anterior}"}]
                     )
                     ultimo_mensaje = r.content[0].text.strip()
@@ -1117,13 +1117,13 @@ def main():
         else:
             saludo = f"Buenas noches {nombre}! En qué te ayudo."
     else:
-        saludo = "Hola! Soy Luna, tu asistente personal. Llámame cuando me necesites."
+        saludo = "Buenas. Soy Alfred, su asistente personal. Llámeme cuando me necesite."
     voz.hablar(saludo)
 
     modo_activo    = False
     turnos_activos = 0
     ultimo_texto   = 0
-    WAKE_WORDS     = ["luna", "lune", "lona", "luna?"]
+    WAKE_WORDS     = ["alfred", "alfredo", "alfred?"]
 
     hilo_voz = None
 
