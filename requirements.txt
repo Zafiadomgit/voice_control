@@ -3,10 +3,10 @@ sounddevice
 soundfile
 scipy
 numpy
+edge-tts
 playsound3
 playwright
 pyttsx3
-faster-whisper
 pycaw
 comtypes
 wmi

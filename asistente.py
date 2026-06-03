@@ -1,8 +1,8 @@
 """
-JADE - VOICE ASSISTANT
-======================
-- ElevenLabs voice (Laura, multilingual)
-- Wake word: "Jade" (flexible, standby sensible)
+ALFRED - VOICE ASSISTANT
+========================
+- Edge TTS voice (es-ES-AlvaroNeural, gratis e ilimitado)
+- Wake word: "Alfred"
 - Background browser (Playwright) + DuckDuckGo search
 - Program control + PC control (shutdown, restart, volume, brightness)
 - Claude Code integration via voice
@@ -12,10 +12,9 @@ JADE - VOICE ASSISTANT
 
 .env file:
   ANTHROPIC_API_KEY=sk-ant-...
-  ELEVENLABS_API_KEY=...
 """
 
-import os, sys, json, subprocess, tempfile, time, threading, base64
+import os, sys, json, subprocess, tempfile, time, threading, base64, asyncio
 import numpy as np
 import sounddevice as sd
 import scipy.io.wavfile as wav_io
@@ -24,10 +23,9 @@ from pathlib import Path
 from playsound3 import playsound
 from datetime import datetime, timedelta
 
-WAKE_WORD        = "alfred"
-ELEVENLABS_VOICE = "pNInz6obpgDQGcFmaJgB"
-ELEVENLABS_MODEL = "eleven_multilingual_v2"
-OPERA_PATH       = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
+WAKE_WORD      = "alfred"
+EDGE_TTS_VOICE = "es-ES-AlvaroNeural"
+OPERA_PATH     = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
 MEMORIA_PATH     = Path(__file__).parent / "memoria.json"
 
 # ─────────────────────────────────────────
@@ -43,7 +41,7 @@ def cargar_env():
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 keys[k.strip()] = v.strip()
-    for k in ["ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY"]:
+    for k in ["ANTHROPIC_API_KEY"]:
         if k not in keys and os.environ.get(k):
             keys[k] = os.environ[k]
     return keys
@@ -121,8 +119,7 @@ PROGRAMAS = {
 # ─────────────────────────────────────────
 
 class Voz:
-    def __init__(self, api_key):
-        self.api_key   = api_key
+    def __init__(self, api_key=None):
         self._hablando = False
 
     def interrumpir(self):
@@ -133,36 +130,16 @@ class Voz:
         self._hablando = False
 
     def hablar(self, texto):
-        print(f"\n🔊 Jade: {texto}\n")
+        print(f"\n🔊 Alfred: {texto}\n")
         self._hablando = True
         tmp = None
         try:
-            import urllib.request, soundfile as sf
-            payload = json.dumps({
-                "text": texto,
-                "model_id": ELEVENLABS_MODEL,
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.75,
-                    "style": 0.3,
-                    "use_speaker_boost": True
-                }
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}",
-                data=payload, method="POST"
-            )
-            req.add_header("xi-api-key", self.api_key)
-            req.add_header("Content-Type", "application/json")
-            req.add_header("Accept", "audio/mpeg")
-            with urllib.request.urlopen(req) as resp:
-                audio_bytes = resp.read()
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                tmp = f.name
-                f.write(audio_bytes)
+            import edge_tts, soundfile as sf
+            tmp = tempfile.mktemp(suffix=".mp3")
+            asyncio.run(self._generar_audio(texto, tmp))
             data, samplerate = sf.read(tmp, dtype='float32')
             sd.play(data, samplerate)
-            sd.wait()  # espera hasta que termina O hasta que se llame sd.stop()
+            sd.wait()
         except Exception as e:
             print(f"[ERROR VOICE] {e}")
             try:
@@ -181,12 +158,11 @@ class Voz:
                     os.unlink(tmp)
                 except:
                     pass
-            if tmp:
-                try:
-                    time.sleep(0.3)
-                    os.unlink(tmp)
-                except:
-                    pass
+
+    async def _generar_audio(self, texto, ruta):
+        import edge_tts
+        communicator = edge_tts.Communicate(texto, EDGE_TTS_VOICE)
+        await communicator.save(ruta)
 
 # ─────────────────────────────────────────
 # MICROPHONE — Google STT, modo standby vs activo
@@ -1081,14 +1057,11 @@ def main():
     keys = cargar_env()
     if "ANTHROPIC_API_KEY" not in keys:
         print("❌ Falta ANTHROPIC_API_KEY en .env"); sys.exit(1)
-    if "ELEVENLABS_API_KEY" not in keys:
-        print("❌ Falta ELEVENLABS_API_KEY en .env"); sys.exit(1)
-
     memoria  = cargar_memoria()
     print(f"🧠 Memoria cargada: {memoria}")
 
     print("🔧 Iniciando...\n")
-    voz        = Voz(keys["ELEVENLABS_API_KEY"])
+    voz        = Voz()
     mic        = Microfono()
     pc         = ControlPC()
     mouse      = ControlMouse()
