@@ -120,9 +120,11 @@ PROGRAMAS = {
 
 class Voz:
     def __init__(self, api_key=None):
-        self._hablando = False
+        self._hablando   = False
+        self._interrumpir = False
 
     def interrumpir(self):
+        self._interrumpir = True
         try:
             sd.stop()
         except:
@@ -130,45 +132,79 @@ class Voz:
         self._hablando = False
 
     def hablar(self, texto):
+        """Genera y reproduce audio de un texto completo."""
+        if not texto or not texto.strip():
+            return
         print(f"\n🔊 Alfred: {texto}\n")
-        self._hablando = True
+        self._hablando    = True
+        self._interrumpir = False
         tmp = None
         try:
-            import edge_tts, soundfile as sf
+            import soundfile as sf
             tmp = tempfile.mktemp(suffix=".mp3")
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(self._run_tts_sync, texto, tmp)
-                future.result()
+            self._tts_a_archivo(texto, tmp)
+            if self._interrumpir:
+                return
             data, samplerate = sf.read(tmp, dtype='float32')
             sd.play(data, samplerate)
             sd.wait()
         except Exception as e:
             print(f"[ERROR VOICE] {e}")
-            try:
-                import pyttsx3
-                engine = pyttsx3.init()
-                engine.say(texto)
-                engine.runAndWait()
-                engine.stop()
-            except:
-                pass
         finally:
             self._hablando = False
             if tmp:
-                try:
-                    time.sleep(0.1)
-                    os.unlink(tmp)
-                except:
-                    pass
+                try: os.unlink(tmp)
+                except: pass
 
-    def _run_tts_sync(self, texto, ruta):
+    def hablar_streaming(self, generador_texto):
+        """Recibe un generador de oraciones y las va hablando en orden con mínima latencia."""
+        import queue, soundfile as sf
+        self._hablando    = True
+        self._interrumpir = False
+        cola = queue.Queue()
+
+        def productor():
+            for oracion in generador_texto:
+                if self._interrumpir:
+                    break
+                if oracion and oracion.strip():
+                    tmp = tempfile.mktemp(suffix=".mp3")
+                    try:
+                        self._tts_a_archivo(oracion, tmp)
+                        cola.put(tmp)
+                    except Exception as e:
+                        print(f"[ERROR TTS] {e}")
+                        try: os.unlink(tmp)
+                        except: pass
+            cola.put(None)  # señal de fin
+
+        hilo = threading.Thread(target=productor, daemon=True)
+        hilo.start()
+
+        while True:
+            tmp = cola.get()
+            if tmp is None or self._interrumpir:
+                break
+            try:
+                data, samplerate = sf.read(tmp, dtype='float32')
+                sd.play(data, samplerate)
+                sd.wait()
+            except Exception as e:
+                print(f"[ERROR PLAY] {e}")
+            finally:
+                try: os.unlink(tmp)
+                except: pass
+
+        self._hablando = False
+
+    def _tts_a_archivo(self, texto, ruta):
         import edge_tts
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            communicator = edge_tts.Communicate(texto, EDGE_TTS_VOICE)
-            loop.run_until_complete(communicator.save(ruta))
+            loop.run_until_complete(
+                edge_tts.Communicate(texto, EDGE_TTS_VOICE).save(ruta)
+            )
         finally:
             loop.close()
 
@@ -981,6 +1017,98 @@ class Cerebro:
         except Exception as e:
             print(f"[ERROR COMPRIMIR] {e}")
 
+    def _preparar_historial(self, texto):
+        self.historial.append({"role": "user", "content": texto})
+        if len(self.historial) >= 16:
+            self._comprimir_historial()
+        elif len(self.historial) > 20:
+            self.historial = self.historial[-20:]
+
+    def procesar_con_streaming(self, texto, voz):
+        """Una sola llamada a Claude con streaming. Si es responder, habla mientras genera."""
+        import re, queue as q_module
+        self._preparar_historial(texto)
+
+        raw_total = []
+        oraciones_q = q_module.Queue()
+        acumulado_buf = [""]
+        json_detectado = [False]
+        resp_final = [None]
+
+        def _stream_worker():
+            try:
+                with self.client.messages.stream(
+                    model="claude-sonnet-4-6",
+                    max_tokens=300,
+                    system=self.system_prompt(),
+                    messages=self.historial
+                ) as stream:
+                    for chunk in stream.text_stream:
+                        raw_total.append(chunk)
+                        acumulado_buf[0] += chunk
+                        # Detectar si es JSON (empieza con {)
+                        stripped = acumulado_buf[0].lstrip()
+                        if stripped.startswith("{"):
+                            json_detectado[0] = True
+                        # Si no es JSON, extraer oraciones y encolar
+                        if not json_detectado[0]:
+                            while True:
+                                m = re.search(r'[.!?]\s+|[.!?]\s*$', acumulado_buf[0])
+                                if not m:
+                                    break
+                                oracion = acumulado_buf[0][:m.end()].strip()
+                                acumulado_buf[0] = acumulado_buf[0][m.end():]
+                                if oracion:
+                                    oraciones_q.put(oracion)
+            except Exception as e:
+                print(f"[ERROR STREAM] {e}")
+            # flush remaining
+            if not json_detectado[0] and acumulado_buf[0].strip():
+                oraciones_q.put(acumulado_buf[0].strip())
+            oraciones_q.put(None)  # fin
+
+        hilo = threading.Thread(target=_stream_worker, daemon=True)
+        hilo.start()
+
+        # Leer primera oración para saber si es texto o JSON
+        primera = oraciones_q.get()
+
+        if primera is None:
+            # Stream vacío o JSON
+            hilo.join()
+            raw = "".join(raw_total).strip().replace("```json","").replace("```","").strip()
+            self.historial.append({"role": "assistant", "content": raw})
+            try:
+                resp = json.loads(raw)
+            except:
+                resp = {"accion":"responder","mensaje": raw}
+            return resp, resp.get("accion")
+
+        if json_detectado[0]:
+            # Es JSON, esperar completo
+            hilo.join()
+            raw = "".join(raw_total).strip().replace("```json","").replace("```","").strip()
+            self.historial.append({"role": "assistant", "content": raw})
+            try:
+                resp = json.loads(raw)
+            except:
+                resp = {"accion":"responder","mensaje": raw}
+            return resp, resp.get("accion")
+
+        # Es texto de conversación — hablar en streaming
+        def _gen_oraciones():
+            yield primera
+            while True:
+                item = oraciones_q.get()
+                if item is None:
+                    break
+                yield item
+        voz.hablar_streaming(_gen_oraciones())
+        hilo.join()
+        raw = "".join(raw_total).strip()
+        self.historial.append({"role": "assistant", "content": raw})
+        return {"accion":"responder","mensaje": raw}, "responder"
+
     def procesar(self, texto):
         self.historial.append({"role": "user", "content": texto})
         if len(self.historial) >= 16:
@@ -1003,6 +1131,55 @@ class Cerebro:
         except Exception as e:
             print(f"[ERROR API] {e}")
             return {"accion":"responder","mensaje":"Problemas de conexión, intenta de nuevo."}
+
+    def responder_streaming(self, texto):
+        """Stream de Claude para respuestas de conversación. Devuelve (json_o_None, generador_oraciones)."""
+        self.historial.append({"role": "user", "content": texto})
+        if len(self.historial) >= 16:
+            self._comprimir_historial()
+        elif len(self.historial) > 20:
+            self.historial = self.historial[-20:]
+
+        buffer_completo = []
+
+        def _oraciones():
+            import re
+            acumulado = ""
+            try:
+                with self.client.messages.stream(
+                    model="claude-sonnet-4-6",
+                    max_tokens=300,
+                    system=self.system_prompt(),
+                    messages=self.historial
+                ) as stream:
+                    for chunk in stream.text_stream:
+                        buffer_completo.append(chunk)
+                        acumulado += chunk
+                        # cortar en signos de puntuación natural
+                        while True:
+                            m = re.search(r'[.!?,:;]\s+|[.!?]\s*$', acumulado)
+                            if not m:
+                                break
+                            oracion = acumulado[:m.end()].strip()
+                            acumulado = acumulado[m.end():]
+                            if oracion:
+                                yield oracion
+                    if acumulado.strip():
+                        yield acumulado.strip()
+            except Exception as e:
+                print(f"[ERROR STREAM] {e}")
+                yield "Tuve un problema, intenta de nuevo."
+
+        gen = _oraciones()
+
+        # Consumir el generador y al final parsear el JSON completo
+        def _gen_con_registro():
+            for oracion in gen:
+                yield oracion
+            raw = "".join(buffer_completo).strip().replace("```json","").replace("```","").strip()
+            self.historial.append({"role": "assistant", "content": raw})
+
+        return _gen_con_registro()
 
     def ejecutar_plan(self, pasos, contexto, navegador, cerebro_ref):
         """Execute a list of plan steps sequentially, passing results between steps."""
@@ -1152,8 +1329,7 @@ def main():
                 modo_activo = False
                 continue
 
-            resp             = cerebro.procesar(texto_procesar)
-            accion           = resp.get("accion")
+            resp, accion = cerebro.procesar_con_streaming(texto_procesar, voz)
             programa         = resp.get("programa")
             query            = resp.get("query")
             url              = resp.get("url")
@@ -1330,10 +1506,9 @@ def main():
                 voz.hablar(mensaje)
                 mensaje = cerebro.ejecutar_plan(pasos, texto_procesar, navegador, cerebro)
 
-            # Hablar y esperar que termine antes de volver a escuchar
-            hilo_voz = threading.Thread(target=voz.hablar, args=(mensaje,), daemon=True)
-            hilo_voz.start()
-            hilo_voz.join()
+            # Hablar respuesta (si es "responder", ya fue hablado en streaming por procesar_con_streaming)
+            if accion != "responder":
+                voz.hablar(mensaje)
             time.sleep(0.4)  # pausa para que el eco del parlante se disipe
 
             turnos_activos += 1
