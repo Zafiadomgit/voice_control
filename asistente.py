@@ -136,7 +136,9 @@ class Voz:
         try:
             import edge_tts, soundfile as sf
             tmp = tempfile.mktemp(suffix=".mp3")
-            asyncio.run(self._generar_audio(texto, tmp))
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(self._generar_audio(texto, tmp))
+            loop.close()
             data, samplerate = sf.read(tmp, dtype='float32')
             sd.play(data, samplerate)
             sd.wait()
