@@ -1510,9 +1510,8 @@ def main():
                 voz.hablar(mensaje)
                 mensaje = cerebro.ejecutar_plan(pasos, texto_procesar, navegador, cerebro)
 
-            # Hablar respuesta (si es "responder", ya fue hablado en streaming por procesar_con_streaming)
-            if accion != "responder":
-                voz.hablar(mensaje)
+            # Hablar respuesta siempre (procesar_con_streaming solo habla en streaming de texto libre)
+            voz.hablar(mensaje)
             time.sleep(0.4)  # pausa para que el eco del parlante se disipe
 
             turnos_activos += 1
