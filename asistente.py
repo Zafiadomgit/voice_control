@@ -225,26 +225,33 @@ class Microfono:
         chunks_sin_voz = int(timeout_sin_voz / 0.03)
         grabando, silencio, hablo, sin_voz = [], 0, False, 0
         vol_max = 0.0
-        with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='float32') as stream:
-            for _ in range(chunks_max):
-                data, _ = stream.read(chunk)
-                grabando.append(data.copy())
-                vol = float(np.abs(data).mean())
-                if vol > vol_max:
-                    vol_max = vol
-                if vol > 0.003:
-                    hablo = True
-                    silencio = 0
-                    sin_voz = 0
-                elif hablo:
-                    silencio += 1
-                    if silencio >= chunks_sil:
-                        break
-                else:
-                    sin_voz += 1
-                    if sin_voz >= chunks_sin_voz:
-                        break
+        try:
+            with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='float32') as stream:
+                for _ in range(chunks_max):
+                    data, _ = stream.read(chunk)
+                    grabando.append(data.copy())
+                    vol = float(np.abs(data).mean())
+                    if vol > vol_max:
+                        vol_max = vol
+                    if vol > 0.003:
+                        hablo = True
+                        silencio = 0
+                        sin_voz = 0
+                    elif hablo:
+                        silencio += 1
+                        if silencio >= chunks_sil:
+                            break
+                    else:
+                        sin_voz += 1
+                        if sin_voz >= chunks_sin_voz:
+                            break
+        except sd.PortAudioError:
+            # Dispositivo de audio no disponible temporalmente
+            time.sleep(1.5)
+            return np.array([], dtype=np.int16)
         print(f"[MIC] vol_max={vol_max:.5f} hablo={hablo} muestras={len(grabando)}")
+        if not grabando:
+            return np.array([], dtype=np.int16)
         return (np.concatenate(grabando) * 32767).astype(np.int16)
 
     def escuchar(self, modo_standby=False):
