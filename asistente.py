@@ -7,11 +7,13 @@ ALFRED - VOICE ASSISTANT
 - Program control + PC control (shutdown, restart, volume, brightness)
 - Claude Code integration via voice
 - Google STT (español)
-- Memoria persistente (nombre, preferencias)
+- Memoria persistente en un vault de Obsidian (nombre, preferencias, notas,
+  perfil, notas diarias) — ver obsidian_vault.py y CLAUDE.md
 - Python 3.10+ Windows
 
 .env file:
   ANTHROPIC_API_KEY=sk-ant-...
+  OBSIDIAN_VAULT_PATH=C:\\Users\\david\\Documents\\Vault   (opcional, ver setup_obsidian.py)
 """
 
 import os, sys, json, subprocess, tempfile, time, threading, base64
@@ -22,11 +24,12 @@ import anthropic
 from pathlib import Path
 from playsound3 import playsound
 from datetime import datetime, timedelta
+from obsidian_vault import ObsidianVault
 
 WAKE_WORD      = "alfred"
 EDGE_TTS_VOICE = "es-MX-JorgeNeural"
 OPERA_PATH     = r"C:\Users\david\AppData\Local\Programs\Opera GX\opera.exe"
-MEMORIA_PATH     = Path(__file__).parent / "memoria.json"
+CONFIG_PATH    = Path(__file__).parent / "config_local.json"
 
 # ─────────────────────────────────────────
 # ENV
@@ -41,7 +44,7 @@ def cargar_env():
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 keys[k.strip()] = v.strip()
-    for k in ["ANTHROPIC_API_KEY"]:
+    for k in ["ANTHROPIC_API_KEY", "OBSIDIAN_VAULT_PATH"]:
         if k not in keys and os.environ.get(k):
             keys[k] = os.environ[k]
     return keys
@@ -49,19 +52,44 @@ def cargar_env():
 # ─────────────────────────────────────────
 # MEMORIA
 # ─────────────────────────────────────────
+# La config operativa (programas guardados, hábitos aprendidos) vive en
+# config_local.json. Los datos "de memoria" propiamente dichos (nombre,
+# preferencias, notas, resumen de conversaciones) viven en el vault de
+# Obsidian, si hay uno configurado — ver obsidian_vault.py.
 
-def cargar_memoria():
-    if MEMORIA_PATH.exists():
+def cargar_memoria(vault):
+    config = {}
+    if CONFIG_PATH.exists():
         try:
-            return json.loads(MEMORIA_PATH.read_text(encoding="utf-8"))
+            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except:
-            pass
-    return {"nombre": None, "preferencias": [], "notas": [], "programas": {}}
+            config = {}
+    config.setdefault("programas", {})
+    config.setdefault("habitos", {})
+    config.setdefault("sugerencias_dadas", {})
 
-def guardar_memoria(mem):
-    MEMORIA_PATH.write_text(json.dumps(mem, ensure_ascii=False, indent=2), encoding="utf-8")
+    vault_mem = vault.cargar_memoria_alfred() if vault else {
+        "nombre": None, "preferencias": [], "notas": [], "resumen_conversacion": ""
+    }
 
-def memoria_a_texto(mem):
+    return {**vault_mem, **config}
+
+def guardar_memoria(mem, vault):
+    config = {
+        "programas": mem.get("programas", {}),
+        "habitos": mem.get("habitos", {}),
+        "sugerencias_dadas": mem.get("sugerencias_dadas", {}),
+    }
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    if vault:
+        vault.guardar_memoria_alfred({
+            "nombre": mem.get("nombre"),
+            "preferencias": mem.get("preferencias", []),
+            "notas": mem.get("notas", []),
+            "resumen_conversacion": mem.get("resumen_conversacion", ""),
+        })
+
+def memoria_a_texto(mem, vault):
     partes = []
     if mem.get("nombre"):
         partes.append(f"El nombre del usuario es {mem['nombre']}.")
@@ -71,7 +99,25 @@ def memoria_a_texto(mem):
         partes.append("Notas guardadas: " + "; ".join(mem["notas"]) + ".")
     if mem.get("resumen_conversacion"):
         partes.append("Resumen de conversaciones anteriores: " + mem["resumen_conversacion"])
+    if vault:
+        perfil = vault.leer_perfil()
+        if perfil:
+            partes.append("Perfil del usuario (desde el vault de Obsidian):\n" + perfil)
     return "\n".join(partes) if partes else ""
+
+def registrar_sesion_diaria(vault, cambios):
+    """Anota en la nota diaria del vault qué se aprendió/guardó en esta sesión de voz."""
+    if not vault or not cambios:
+        return
+    try:
+        vault.agregar_sesion_diaria(
+            tema="Sesión de voz con Alfred",
+            hecho=cambios,
+            notas_tocadas=["[[Memoria Alfred]]"],
+            actualizaciones_perfil=cambios,
+        )
+    except Exception as e:
+        print(f"[VAULT] No pude registrar la sesión diaria: {e}")
 
 # ─────────────────────────────────────────
 # PROGRAMS
@@ -484,8 +530,11 @@ class ControlPC:
 
     def _abrir_claude_code(self, prompt=None):
         try:
+            # Arranca con cwd en la carpeta del proyecto para que Claude Code
+            # cargue su CLAUDE.md (identidad de Alfred + puntero al vault).
+            repo_dir = str(Path(__file__).parent)
             cmd = f'start cmd /k claude' + (f' "{prompt}"' if prompt else '')
-            subprocess.Popen(cmd, shell=True)
+            subprocess.Popen(cmd, shell=True, cwd=repo_dir)
             return True
         except Exception as e:
             print(f"[ERROR CLAUDE CODE] {e}")
@@ -889,8 +938,15 @@ class AprendizajeHabitos:
         return None
 
 
-SYSTEM_PROMPT_BASE = """Eres Alfred, un asistente de voz personal masculino que controla un PC con Windows.
-Respondes siempre en español, con naturalidad y brevedad. Hablas como un mayordomo inteligente y eficiente.
+SYSTEM_PROMPT_BASE = """Eres Alfred, mayordomo digital y jefe de operaciones de David para su PC con Windows.
+Respondes siempre en español, con naturalidad y brevedad. Hablas como un mayordomo inteligente, directo y eficiente:
+educado pero sin rodeos, con carácter propio, nunca en "modo informativo" plano.
+Tienes dos mandatos iguales: mantener el sistema funcionando (te encargas de la cadena completa, no delegas el problema
+de vuelta a David) y ser un socio estratégico (cuestionas una idea cuando no cuadra, incluso si es de David).
+
+Tu memoria vive fuera de este chat, en un vault de Obsidian que se recarga en cada turno (ver bloque de abajo) — no
+la retienes tú, confías en que está ahí y la usas cuando aparece. Cuando David te cuente algo que deba recordarse,
+lo guardas con la acción "guardar_memoria" para que quede escrito en el vault, no solo en esta conversación.
 
 {memoria}
 
@@ -973,13 +1029,14 @@ GUARDAR MEMORIA — cuando el usuario diga su nombre, una preferencia o algo que
 "recuerda que trabajo de noche" -> {"accion":"guardar_memoria","memoria_key":"nota","memoria_valor":"trabaja de noche","mensaje":"Lo tengo en cuenta!"}"""
 
 class Cerebro:
-    def __init__(self, api_key, memoria):
+    def __init__(self, api_key, memoria, vault=None):
         self.client    = anthropic.Anthropic(api_key=api_key)
         self.historial = []
         self.memoria   = memoria
+        self.vault     = vault
 
     def system_prompt(self):
-        mem_texto = memoria_a_texto(self.memoria)
+        mem_texto = memoria_a_texto(self.memoria, self.vault)
         bloque = f"\nINFORMACIÓN DEL USUARIO:\n{mem_texto}" if mem_texto else ""
         return SYSTEM_PROMPT_BASE.replace("{memoria}", bloque)
 
@@ -1016,8 +1073,8 @@ class Cerebro:
                 self.memoria["resumen_conversacion"] = resumen_anterior + " " + resumen
             else:
                 self.memoria["resumen_conversacion"] = resumen
-            guardar_memoria(self.memoria)
-            print(f"[MEMORIA] Historial comprimido. Resumen guardado.")
+            guardar_memoria(self.memoria, self.vault)
+            print(f"[MEMORIA] Historial comprimido. Resumen guardado en el vault.")
         except Exception as e:
             print(f"[ERROR COMPRIMIR] {e}")
 
@@ -1240,13 +1297,27 @@ class Cerebro:
 
 def main():
     print("\n" + "="*52)
-    print("   🤖  Jade — Asistente de Voz  |  Windows")
+    print("   🤖  Alfred — Asistente de Voz  |  Windows")
     print("="*52 + "\n")
 
     keys = cargar_env()
     if "ANTHROPIC_API_KEY" not in keys:
         print("❌ Falta ANTHROPIC_API_KEY en .env"); sys.exit(1)
-    memoria  = cargar_memoria()
+
+    vault = None
+    vault_path = keys.get("OBSIDIAN_VAULT_PATH")
+    if vault_path:
+        candidato = ObsidianVault(vault_path)
+        if candidato.existe():
+            vault = candidato
+            print(f"🗂️  Memoria en el vault de Obsidian: {vault_path}")
+        else:
+            print(f"⚠️  OBSIDIAN_VAULT_PATH apunta a '{vault_path}' pero no encontré un vault ahí.")
+            print("   Corre: python setup_obsidian.py — mientras tanto solo se usará la config local.")
+    else:
+        print("ℹ️  OBSIDIAN_VAULT_PATH no está configurado en .env — memoria solo local (ver setup_obsidian.py).")
+
+    memoria  = cargar_memoria(vault)
     print(f"🧠 Memoria cargada: {memoria}")
 
     print("🔧 Iniciando...\n")
@@ -1260,14 +1331,15 @@ def main():
     recordatorios = GestorRecordatorios(voz)
     monitor    = MonitorSistema(voz)
     pc.programas_extra = memoria.get("programas", {})
-    cerebro    = Cerebro(keys["ANTHROPIC_API_KEY"], memoria)
+    cerebro    = Cerebro(keys["ANTHROPIC_API_KEY"], memoria, vault)
+    cambios_memoria_sesion = []
 
     print("🌐 Iniciando navegador en segundo plano...")
     navegador  = Navegador()
     whatsapp   = WhatsAppWeb(navegador)
 
     nombre = memoria.get("nombre") or "usuario"
-    print(f"\n✅ Listo! Di 'JADE' para activarme | Ctrl+C para salir\n")
+    print(f"\n✅ Listo! Di 'ALFRED' para activarme | Ctrl+C para salir\n")
     print("-"*52)
 
     hora = datetime.now().hour
@@ -1291,7 +1363,7 @@ def main():
 
     while True:
         try:
-            # Escuchar en hilo separado mientras Jade habla (para poder interrumpir)
+            # Escuchar en hilo separado mientras Alfred habla (para poder interrumpir)
             texto = mic.escuchar(modo_standby=not modo_activo)
 
             if not texto:
@@ -1302,14 +1374,14 @@ def main():
 
             ultimo_texto = time.time()
 
-            # Interrumpir a Jade si está hablando
+            # Interrumpir a Alfred si está hablando
             if voz._hablando:
                 voz.interrumpir()
                 time.sleep(0.3)
 
             print(f"👤 [{'ON' if modo_activo else 'standby'}] {texto}")
 
-            # ── Standby: cualquier frase con "jade" activa ──
+            # ── Standby: cualquier frase con "alfred" activa ──
             if not modo_activo:
                 if any(w in texto for w in WAKE_WORDS):
                     modo_activo    = True
@@ -1331,6 +1403,8 @@ def main():
             if any(p in texto for p in ["adiós","bye","gracias","para de escuchar","silencio","stop"]):
                 voz.hablar("Listo, llámame cuando me necesites!")
                 modo_activo = False
+                registrar_sesion_diaria(vault, cambios_memoria_sesion)
+                cambios_memoria_sesion.clear()
                 continue
 
             resp, accion = cerebro.procesar_con_streaming(texto_procesar, voz)
@@ -1362,7 +1436,7 @@ def main():
             if accion == "abrir_programa" and programa:
                 sugerencia = habitos.registrar("abrir_programa", programa)
                 if sugerencia:
-                    guardar_memoria(cerebro.memoria)
+                    guardar_memoria(cerebro.memoria, vault)
 
             if accion == "abrir_programa" and programa:
                 if not pc.abrir(programa):
@@ -1430,18 +1504,21 @@ def main():
             elif accion == "guardar_programa" and prog_nombre and prog_ruta:
                 cerebro.memoria.setdefault("programas", {})[prog_nombre.lower()] = prog_ruta
                 pc.programas_extra = cerebro.memoria["programas"]
-                guardar_memoria(cerebro.memoria)
+                guardar_memoria(cerebro.memoria, vault)
 
             elif accion == "guardar_memoria" and mem_key and mem_valor:
                 if mem_key == "nombre":
                     cerebro.memoria["nombre"] = mem_valor
+                    cambios_memoria_sesion.append(f"Nombre actualizado a {mem_valor}")
                 elif mem_key == "preferencia":
                     if mem_valor not in cerebro.memoria["preferencias"]:
                         cerebro.memoria["preferencias"].append(mem_valor)
+                        cambios_memoria_sesion.append(f"Preferencia añadida: {mem_valor}")
                 elif mem_key == "nota":
                     if mem_valor not in cerebro.memoria["notas"]:
                         cerebro.memoria["notas"].append(mem_valor)
-                guardar_memoria(cerebro.memoria)
+                        cambios_memoria_sesion.append(f"Nota añadida: {mem_valor}")
+                guardar_memoria(cerebro.memoria, vault)
 
             # ── Feature 3: Mouse / keyboard actions ──
             elif accion == "mouse_click":
@@ -1519,8 +1596,9 @@ def main():
                 modo_activo = False
 
         except KeyboardInterrupt:
-            print("\nApagando Jade...")
+            print("\nApagando Alfred...")
             voz.hablar("Hasta luego!")
+            registrar_sesion_diaria(vault, cambios_memoria_sesion)
             try:
                 navegador.cerrar()
             except:

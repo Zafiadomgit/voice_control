@@ -11,3 +11,4 @@ build/
 venv/
 .claude/
 memoria.json
+config_local.json
