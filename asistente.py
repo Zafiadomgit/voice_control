@@ -44,7 +44,7 @@ def cargar_env():
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 keys[k.strip()] = v.strip()
-    for k in ["ANTHROPIC_API_KEY", "OBSIDIAN_VAULT_PATH"]:
+    for k in ["ANTHROPIC_API_KEY", "OBSIDIAN_VAULT_PATH", "WEB_SERVER_ENABLED", "WEB_SERVER_PORT", "WEB_ACCESS_TOKEN"]:
         if k not in keys and os.environ.get(k):
             keys[k] = os.environ[k]
     return keys
@@ -1087,6 +1087,52 @@ class Cerebro:
         except Exception as e:
             print(f"[ERROR COMPRIMIR] {e}")
 
+    def reflexionar_y_actualizar_perfil(self):
+        """Al cerrar sesión, revisa la conversación reciente y, si aprendió algo genuinamente
+        nuevo sobre cómo piensa/vive el usuario, lo anexa a la sección correspondiente de
+        VAULT-INDEX.md. Devuelve una descripción corta del cambio, o None si no hubo nada que anotar."""
+        if not self.vault or not self.historial:
+            return None
+        try:
+            texto_conv = "\n".join(
+                f"{m['role'].upper()}: {m['content']}" for m in self.historial[-16:]
+            )
+            r = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=300,
+                system=(
+                    "Analiza esta conversación entre David y Alfred, su asistente de voz. "
+                    "Decide si se reveló algo genuinamente nuevo y significativo sobre cómo piensa, "
+                    "sus intereses, su rutina diaria, o gente clave en su vida — no algo trivial, "
+                    "ya obvio, o que ya se sabría por contexto general. Responde SOLO en JSON puro, "
+                    "sin markdown: "
+                    '{"actualizar": true|false, '
+                    '"seccion": "Cómo pienso"|"Intereses personales"|"Rutina diaria"|"Personas clave" o null, '
+                    '"contenido": "una viñeta breve en primera persona, o null"}. '
+                    "Si no hay nada genuinamente nuevo, actualizar debe ser false."
+                ),
+                messages=[{"role": "user", "content": texto_conv}]
+            )
+            raw = r.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+            data = json.loads(raw)
+            if not data.get("actualizar") or not data.get("seccion") or not data.get("contenido"):
+                return None
+            seccion = data["seccion"]
+            contenido_nuevo = data["contenido"].strip()
+
+            actual = self.vault.leer_seccion_vault_index(seccion) or ""
+            if not contenido_nuevo or contenido_nuevo in actual:
+                return None
+            lineas = [l for l in actual.splitlines() if l.strip() and l.strip() != "-" and "[RELLENAR" not in l]
+            lineas.append(f"- {contenido_nuevo}")
+            if self.vault.actualizar_seccion_vault_index(seccion, "\n".join(lineas)):
+                print(f"[REFLEXION] Perfil actualizado — {seccion}: {contenido_nuevo}")
+                return f"{seccion}: {contenido_nuevo}"
+            return None
+        except Exception as e:
+            print(f"[ERROR REFLEXION] {e}")
+            return None
+
     def _preparar_historial(self, texto):
         self.historial.append({"role": "user", "content": texto})
         if len(self.historial) >= 16:
@@ -1301,6 +1347,238 @@ class Cerebro:
         return ultimo_mensaje or resultado_anterior
 
 # ─────────────────────────────────────────
+# CONTEXTO COMPARTIDO — voz local y servidor web (teléfono)
+# ─────────────────────────────────────────
+
+class Contexto:
+    """Agrupa los objetos ya construidos de Alfred para poder ejecutar acciones tanto desde
+    el loop de voz local como desde el servidor web del teléfono (servidor_web.py)."""
+    def __init__(self, cerebro, voz, pc, mouse, ventanas, archivos, habitos, recordatorios,
+                 monitor, navegador, whatsapp, vault, cambios_memoria_sesion):
+        self.cerebro = cerebro
+        self.voz = voz
+        self.pc = pc
+        self.mouse = mouse
+        self.ventanas = ventanas
+        self.archivos = archivos
+        self.habitos = habitos
+        self.recordatorios = recordatorios
+        self.monitor = monitor
+        self.navegador = navegador
+        self.whatsapp = whatsapp
+        self.vault = vault
+        self.cambios_memoria_sesion = cambios_memoria_sesion
+
+
+def ejecutar_accion(resp, accion, texto_procesar, ctx):
+    """Ejecuta la acción que decidió Claude y devuelve el mensaje final. Compartido entre
+    el loop de voz local (main) y el servidor web del teléfono (servidor_web.py)."""
+    cerebro       = ctx.cerebro
+    voz           = ctx.voz
+    pc            = ctx.pc
+    mouse         = ctx.mouse
+    ventanas      = ctx.ventanas
+    archivos      = ctx.archivos
+    habitos       = ctx.habitos
+    recordatorios = ctx.recordatorios
+    monitor       = ctx.monitor
+    navegador     = ctx.navegador
+    whatsapp      = ctx.whatsapp
+    vault         = ctx.vault
+    cambios_memoria_sesion = ctx.cambios_memoria_sesion
+
+    programa         = resp.get("programa")
+    query            = resp.get("query")
+    url              = resp.get("url")
+    subaccion        = resp.get("subaccion")
+    cantidad         = resp.get("cantidad") or 10
+    prompt_claude    = resp.get("prompt_claude")
+    mem_key          = resp.get("memoria_key")
+    mem_valor        = resp.get("memoria_valor")
+    prog_nombre      = resp.get("prog_nombre")
+    prog_ruta        = resp.get("prog_ruta")
+    mouse_x          = resp.get("mouse_x")
+    mouse_y          = resp.get("mouse_y")
+    texto_escribir   = resp.get("texto_escribir")
+    teclas           = resp.get("teclas")
+    pasos            = resp.get("pasos")
+    rec_msg          = resp.get("recordatorio_msg")
+    rec_seg          = resp.get("recordatorio_seg")
+    vent_accion      = resp.get("ventana_accion")
+    vent_nombre      = resp.get("ventana_nombre") or ""
+    archivo_buscar   = resp.get("archivo_buscar")
+    wa_contacto      = resp.get("wa_contacto")
+    wa_mensaje_txt   = resp.get("wa_mensaje")
+    mensaje          = resp.get("mensaje", "Hecho!")
+
+    # Registrar hábito
+    if accion == "abrir_programa" and programa:
+        sugerencia = habitos.registrar("abrir_programa", programa)
+        if sugerencia:
+            guardar_memoria(cerebro.memoria, vault)
+
+    if accion == "abrir_programa" and programa:
+        if not pc.abrir(programa):
+            mensaje = f"No encontré {programa}. Asegúrate de que esté instalado."
+
+    elif accion == "buscar_web" and query:
+        voz.hablar(mensaje)
+        try:
+            resultados = navegador.buscar(query)
+            if resultados:
+                resumen = ". ".join(resultados[:2])
+                mensaje = f"Encontré esto: {resumen}. Di muéstrame para verlo en Opera GX."
+            else:
+                mensaje = "Busqué pero no encontré resultados. Di muéstrame para ver el navegador."
+        except Exception as e:
+            print(f"[ERROR BROWSER] {e}")
+            mensaje = "Tuve un problema buscando, intenta de nuevo."
+
+    elif accion == "navegar_url" and url:
+        voz.hablar(mensaje)
+        try:
+            title = navegador.navegar(url)
+            mensaje = f"Estoy en {title}. Di muéstrame si quieres verlo."
+        except Exception as e:
+            mensaje = "Tuve un problema navegando a ese sitio."
+
+    elif accion == "leer_pagina":
+        contenido = navegador.leer_pagina()
+        if contenido:
+            resumen = cerebro.resumir_pagina(contenido, texto_procesar)
+            mensaje = resumen
+        else:
+            mensaje = "No pude leer el contenido de la página actual."
+
+    elif accion == "mostrar_navegador":
+        try:
+            navegador.mostrar()
+            mensaje = "Abriendo Opera GX en primer plano!"
+        except Exception as e:
+            mensaje = "No pude abrir el navegador."
+
+    elif accion == "apagar_pc":
+        pc.apagar(reiniciar=False)
+
+    elif accion == "reiniciar_pc":
+        pc.apagar(reiniciar=True)
+
+    elif accion == "cancelar_apagado":
+        pc.cancelar_apagado()
+
+    elif accion == "volumen" and subaccion:
+        if not pc.volumen(subaccion, int(cantidad)):
+            mensaje = "No pude ajustar el volumen."
+
+    elif accion == "brillo" and subaccion:
+        if not pc.brillo(subaccion, int(cantidad)):
+            mensaje = "No pude ajustar el brillo. Solo funciona en laptops."
+
+    elif accion == "claude_code":
+        if prompt_claude:
+            pc.claude_code_con_prompt(prompt_claude)
+        else:
+            pc.abrir("claude code")
+
+    elif accion == "guardar_programa" and prog_nombre and prog_ruta:
+        cerebro.memoria.setdefault("programas", {})[prog_nombre.lower()] = prog_ruta
+        pc.programas_extra = cerebro.memoria["programas"]
+        guardar_memoria(cerebro.memoria, vault)
+
+    elif accion == "guardar_memoria" and mem_key and mem_valor:
+        if mem_key == "nombre":
+            cerebro.memoria["nombre"] = mem_valor
+            cambios_memoria_sesion.append(f"Nombre actualizado a {mem_valor}")
+        elif mem_key == "preferencia":
+            if mem_valor not in cerebro.memoria["preferencias"]:
+                cerebro.memoria["preferencias"].append(mem_valor)
+                cambios_memoria_sesion.append(f"Preferencia añadida: {mem_valor}")
+        elif mem_key == "nota":
+            if mem_valor not in cerebro.memoria["notas"]:
+                cerebro.memoria["notas"].append(mem_valor)
+                cambios_memoria_sesion.append(f"Nota añadida: {mem_valor}")
+        guardar_memoria(cerebro.memoria, vault)
+
+    # ── Feature 3: Mouse / keyboard actions ──
+    elif accion == "mouse_click":
+        if mouse_x is not None and mouse_y is not None:
+            if not mouse.click(int(mouse_x), int(mouse_y)):
+                mensaje = "No pude hacer clic en esa posición."
+        else:
+            mensaje = "Necesito las coordenadas para hacer clic."
+
+    elif accion == "escribir_texto":
+        if texto_escribir:
+            if not mouse.escribir(texto_escribir):
+                mensaje = "No pude escribir el texto."
+        else:
+            mensaje = "No recibí el texto a escribir."
+
+    elif accion == "hotkey":
+        if teclas:
+            keys_list = [k.strip() for k in teclas.replace("+", " ").split()]
+            if not mouse.hotkey(*keys_list):
+                mensaje = "No pude ejecutar el atajo de teclado."
+        else:
+            mensaje = "No recibí las teclas para el atajo."
+
+    elif accion == "screenshot":
+        descripcion = mouse.screenshot_y_analizar(texto_procesar, cerebro)
+        mensaje = descripcion
+
+    elif accion == "recordatorio" and rec_msg and rec_seg:
+        recordatorios.agregar(rec_msg, int(rec_seg))
+
+    elif accion == "estado_sistema":
+        mensaje = monitor.estado()
+
+    elif accion == "ventana" and vent_accion:
+        if vent_accion == "listar":
+            mensaje = ventanas.listar()
+        elif vent_accion == "enfocar":
+            mensaje = ventanas.enfocar(vent_nombre)
+        elif vent_accion == "maximizar":
+            mensaje = ventanas.maximizar(vent_nombre)
+        elif vent_accion == "minimizar":
+            mensaje = ventanas.minimizar(vent_nombre)
+        elif vent_accion == "cerrar":
+            mensaje = ventanas.cerrar(vent_nombre)
+
+    elif accion == "buscar_archivo" and archivo_buscar:
+        voz.hablar(mensaje)
+        resultados = archivos.buscar(archivo_buscar)
+        if resultados:
+            nombres = [os.path.basename(r) for r in resultados[:3]]
+            mensaje = f"Encontré {len(resultados)} archivo(s): {', '.join(nombres)}. ¿Quieres que abra alguno?"
+            cerebro.historial.append({"role": "assistant", "content": f"Archivos encontrados: {resultados}"})
+        else:
+            mensaje = f"No encontré ningún archivo con '{archivo_buscar}' en tus carpetas."
+
+    elif accion == "whatsapp" and wa_contacto and wa_mensaje_txt:
+        voz.hablar(mensaje)
+        if whatsapp.enviar(wa_contacto, wa_mensaje_txt):
+            mensaje = f"Mensaje enviado a {wa_contacto}."
+        else:
+            mensaje = f"No pude enviar el mensaje. Asegúrate de tener WhatsApp Web abierto y sesión iniciada."
+
+    # ── Multi-step plan ──
+    elif accion == "plan" and pasos:
+        voz.hablar(mensaje)
+        mensaje = cerebro.ejecutar_plan(pasos, texto_procesar, navegador, cerebro)
+
+    return mensaje
+
+
+def cerrar_sesion_vault(cerebro, vault, cambios_memoria_sesion):
+    """Reflexiona sobre la conversación reciente y anota la sesión en la nota diaria del vault."""
+    reflexion = cerebro.reflexionar_y_actualizar_perfil()
+    if reflexion:
+        cambios_memoria_sesion.append(f"[inferido] {reflexion}")
+    registrar_sesion_diaria(vault, cambios_memoria_sesion)
+    cambios_memoria_sesion.clear()
+
+
+# ─────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────
 
@@ -1346,6 +1624,21 @@ def main():
     print("🌐 Iniciando navegador en segundo plano...")
     navegador  = Navegador()
     whatsapp   = WhatsAppWeb(navegador)
+
+    ctx = Contexto(cerebro, voz, pc, mouse, ventanas, archivos, habitos, recordatorios,
+                   monitor, navegador, whatsapp, vault, cambios_memoria_sesion)
+
+    if keys.get("WEB_SERVER_ENABLED", "").strip().lower() in ("1", "true", "si", "sí"):
+        try:
+            import servidor_web
+            puerto = int(keys.get("WEB_SERVER_PORT") or 8420)
+            token  = keys.get("WEB_ACCESS_TOKEN", "")
+            if not token:
+                print("⚠️  WEB_SERVER_ENABLED activo sin WEB_ACCESS_TOKEN — cualquiera en tu red podría hablarle a Alfred. Añade WEB_ACCESS_TOKEN a tu .env.")
+            servidor_web.iniciar_en_hilo(ctx, ejecutar_accion, puerto, token)
+            print(f"📱 Servidor web para el teléfono activo en el puerto {puerto} (usa tu IP de Tailscale + ese puerto desde el navegador del teléfono).")
+        except Exception as e:
+            print(f"⚠️  No pude iniciar el servidor web ({e}). Revisa que instalaste fastapi y uvicorn: pip install -r requirements.txt")
 
     nombre = memoria.get("nombre") or "usuario"
     print(f"\n✅ Listo! Di 'ALFRED' para activarme | Ctrl+C para salir\n")
@@ -1412,189 +1705,11 @@ def main():
             if any(p in texto for p in ["adiós","bye","gracias","para de escuchar","silencio","stop"]):
                 voz.hablar("Listo, llámame cuando me necesites!")
                 modo_activo = False
-                registrar_sesion_diaria(vault, cambios_memoria_sesion)
-                cambios_memoria_sesion.clear()
+                cerrar_sesion_vault(cerebro, vault, cambios_memoria_sesion)
                 continue
 
             resp, accion = cerebro.procesar_con_streaming(texto_procesar, voz)
-            programa         = resp.get("programa")
-            query            = resp.get("query")
-            url              = resp.get("url")
-            subaccion        = resp.get("subaccion")
-            cantidad         = resp.get("cantidad") or 10
-            prompt_claude    = resp.get("prompt_claude")
-            mem_key          = resp.get("memoria_key")
-            mem_valor        = resp.get("memoria_valor")
-            prog_nombre      = resp.get("prog_nombre")
-            prog_ruta        = resp.get("prog_ruta")
-            mouse_x          = resp.get("mouse_x")
-            mouse_y          = resp.get("mouse_y")
-            texto_escribir   = resp.get("texto_escribir")
-            teclas           = resp.get("teclas")
-            pasos            = resp.get("pasos")
-            rec_msg          = resp.get("recordatorio_msg")
-            rec_seg          = resp.get("recordatorio_seg")
-            vent_accion      = resp.get("ventana_accion")
-            vent_nombre      = resp.get("ventana_nombre") or ""
-            archivo_buscar   = resp.get("archivo_buscar")
-            wa_contacto      = resp.get("wa_contacto")
-            wa_mensaje_txt   = resp.get("wa_mensaje")
-            mensaje          = resp.get("mensaje", "Hecho!")
-
-            # Registrar hábito
-            if accion == "abrir_programa" and programa:
-                sugerencia = habitos.registrar("abrir_programa", programa)
-                if sugerencia:
-                    guardar_memoria(cerebro.memoria, vault)
-
-            if accion == "abrir_programa" and programa:
-                if not pc.abrir(programa):
-                    mensaje = f"No encontré {programa}. Asegúrate de que esté instalado."
-
-            elif accion == "buscar_web" and query:
-                voz.hablar(mensaje)
-                try:
-                    resultados = navegador.buscar(query)
-                    if resultados:
-                        resumen = ". ".join(resultados[:2])
-                        mensaje = f"Encontré esto: {resumen}. Di muéstrame para verlo en Opera GX."
-                    else:
-                        mensaje = "Busqué pero no encontré resultados. Di muéstrame para ver el navegador."
-                except Exception as e:
-                    print(f"[ERROR BROWSER] {e}")
-                    mensaje = "Tuve un problema buscando, intenta de nuevo."
-
-            elif accion == "navegar_url" and url:
-                voz.hablar(mensaje)
-                try:
-                    title = navegador.navegar(url)
-                    mensaje = f"Estoy en {title}. Di muéstrame si quieres verlo."
-                except Exception as e:
-                    mensaje = "Tuve un problema navegando a ese sitio."
-
-            elif accion == "leer_pagina":
-                contenido = navegador.leer_pagina()
-                if contenido:
-                    resumen = cerebro.resumir_pagina(contenido, texto_procesar)
-                    mensaje = resumen
-                else:
-                    mensaje = "No pude leer el contenido de la página actual."
-
-            elif accion == "mostrar_navegador":
-                try:
-                    navegador.mostrar()
-                    mensaje = "Abriendo Opera GX en primer plano!"
-                except Exception as e:
-                    mensaje = "No pude abrir el navegador."
-
-            elif accion == "apagar_pc":
-                pc.apagar(reiniciar=False)
-
-            elif accion == "reiniciar_pc":
-                pc.apagar(reiniciar=True)
-
-            elif accion == "cancelar_apagado":
-                pc.cancelar_apagado()
-
-            elif accion == "volumen" and subaccion:
-                if not pc.volumen(subaccion, int(cantidad)):
-                    mensaje = "No pude ajustar el volumen."
-
-            elif accion == "brillo" and subaccion:
-                if not pc.brillo(subaccion, int(cantidad)):
-                    mensaje = "No pude ajustar el brillo. Solo funciona en laptops."
-
-            elif accion == "claude_code":
-                if prompt_claude:
-                    pc.claude_code_con_prompt(prompt_claude)
-                else:
-                    pc.abrir("claude code")
-
-            elif accion == "guardar_programa" and prog_nombre and prog_ruta:
-                cerebro.memoria.setdefault("programas", {})[prog_nombre.lower()] = prog_ruta
-                pc.programas_extra = cerebro.memoria["programas"]
-                guardar_memoria(cerebro.memoria, vault)
-
-            elif accion == "guardar_memoria" and mem_key and mem_valor:
-                if mem_key == "nombre":
-                    cerebro.memoria["nombre"] = mem_valor
-                    cambios_memoria_sesion.append(f"Nombre actualizado a {mem_valor}")
-                elif mem_key == "preferencia":
-                    if mem_valor not in cerebro.memoria["preferencias"]:
-                        cerebro.memoria["preferencias"].append(mem_valor)
-                        cambios_memoria_sesion.append(f"Preferencia añadida: {mem_valor}")
-                elif mem_key == "nota":
-                    if mem_valor not in cerebro.memoria["notas"]:
-                        cerebro.memoria["notas"].append(mem_valor)
-                        cambios_memoria_sesion.append(f"Nota añadida: {mem_valor}")
-                guardar_memoria(cerebro.memoria, vault)
-
-            # ── Feature 3: Mouse / keyboard actions ──
-            elif accion == "mouse_click":
-                if mouse_x is not None and mouse_y is not None:
-                    if not mouse.click(int(mouse_x), int(mouse_y)):
-                        mensaje = "No pude hacer clic en esa posición."
-                else:
-                    mensaje = "Necesito las coordenadas para hacer clic."
-
-            elif accion == "escribir_texto":
-                if texto_escribir:
-                    if not mouse.escribir(texto_escribir):
-                        mensaje = "No pude escribir el texto."
-                else:
-                    mensaje = "No recibí el texto a escribir."
-
-            elif accion == "hotkey":
-                if teclas:
-                    keys_list = [k.strip() for k in teclas.replace("+", " ").split()]
-                    if not mouse.hotkey(*keys_list):
-                        mensaje = "No pude ejecutar el atajo de teclado."
-                else:
-                    mensaje = "No recibí las teclas para el atajo."
-
-            elif accion == "screenshot":
-                descripcion = mouse.screenshot_y_analizar(texto_procesar, cerebro)
-                mensaje = descripcion
-
-            elif accion == "recordatorio" and rec_msg and rec_seg:
-                recordatorios.agregar(rec_msg, int(rec_seg))
-
-            elif accion == "estado_sistema":
-                mensaje = monitor.estado()
-
-            elif accion == "ventana" and vent_accion:
-                if vent_accion == "listar":
-                    mensaje = ventanas.listar()
-                elif vent_accion == "enfocar":
-                    mensaje = ventanas.enfocar(vent_nombre)
-                elif vent_accion == "maximizar":
-                    mensaje = ventanas.maximizar(vent_nombre)
-                elif vent_accion == "minimizar":
-                    mensaje = ventanas.minimizar(vent_nombre)
-                elif vent_accion == "cerrar":
-                    mensaje = ventanas.cerrar(vent_nombre)
-
-            elif accion == "buscar_archivo" and archivo_buscar:
-                voz.hablar(mensaje)
-                resultados = archivos.buscar(archivo_buscar)
-                if resultados:
-                    nombres = [os.path.basename(r) for r in resultados[:3]]
-                    mensaje = f"Encontré {len(resultados)} archivo(s): {', '.join(nombres)}. ¿Quieres que abra alguno?"
-                    cerebro.historial.append({"role": "assistant", "content": f"Archivos encontrados: {resultados}"})
-                else:
-                    mensaje = f"No encontré ningún archivo con '{archivo_buscar}' en tus carpetas."
-
-            elif accion == "whatsapp" and wa_contacto and wa_mensaje_txt:
-                voz.hablar(mensaje)
-                if whatsapp.enviar(wa_contacto, wa_mensaje_txt):
-                    mensaje = f"Mensaje enviado a {wa_contacto}."
-                else:
-                    mensaje = f"No pude enviar el mensaje. Asegúrate de tener WhatsApp Web abierto y sesión iniciada."
-
-            # ── Multi-step plan ──
-            elif accion == "plan" and pasos:
-                voz.hablar(mensaje)
-                mensaje = cerebro.ejecutar_plan(pasos, texto_procesar, navegador, cerebro)
+            mensaje = ejecutar_accion(resp, accion, texto_procesar, ctx)
 
             # Hablar respuesta siempre (procesar_con_streaming solo habla en streaming de texto libre)
             voz.hablar(mensaje)
@@ -1607,7 +1722,7 @@ def main():
         except KeyboardInterrupt:
             print("\nApagando Alfred...")
             voz.hablar("Hasta luego!")
-            registrar_sesion_diaria(vault, cambios_memoria_sesion)
+            cerrar_sesion_vault(cerebro, vault, cambios_memoria_sesion)
             try:
                 navegador.cerrar()
             except:

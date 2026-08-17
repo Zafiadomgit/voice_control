@@ -13,3 +13,5 @@ wmi
 pywin32
 pyautogui
 pillow
+fastapi
+uvicorn[standard]

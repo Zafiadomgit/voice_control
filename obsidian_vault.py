@@ -144,6 +144,44 @@ class ObsidianVault:
 
         return "\n\n".join(partes)
 
+    def leer_seccion_vault_index(self, titulo):
+        """Devuelve el contenido crudo de una sección de VAULT-INDEX.md, o None si no existe."""
+        ruta = self.ruta / "VAULT-INDEX.md"
+        if not ruta.exists():
+            return None
+        try:
+            texto = ruta.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        return self._extraer_seccion(texto, titulo)
+
+    def actualizar_seccion_vault_index(self, titulo, contenido):
+        """Reemplaza el contenido de una sección de VAULT-INDEX.md (entre '## {titulo}' y la siguiente
+        sección o '---'). Devuelve True si la sección existía y se actualizó, False si no la encontró."""
+        ruta = self.ruta / "VAULT-INDEX.md"
+        if not ruta.exists():
+            return False
+        try:
+            texto = ruta.read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"[VAULT] No pude leer VAULT-INDEX.md: {e}")
+            return False
+
+        patron = re.compile(
+            r'(^##\s+' + re.escape(titulo) + r'\s*\n)(.*?)(?=\n##\s|\n---|\Z)',
+            re.MULTILINE | re.DOTALL
+        )
+        if not patron.search(texto):
+            return False
+
+        nuevo_texto = patron.sub(lambda m: m.group(1) + contenido.strip() + "\n", texto, count=1)
+        try:
+            ruta.write_text(nuevo_texto, encoding="utf-8")
+            return True
+        except Exception as e:
+            print(f"[VAULT] No pude guardar VAULT-INDEX.md: {e}")
+            return False
+
     # ─────────────────────────────────────────
     # NOTA DIARIA
     # ─────────────────────────────────────────
